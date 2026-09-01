@@ -6,6 +6,17 @@ use tauri::path::BaseDirectory;
 use tauri::webview::WebviewBuilder;
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl};
 
+#[cfg(windows)]
+use webview2_com::{
+    ClearBrowsingDataCompletedHandler,
+    Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Profile2, ICoreWebView2_13,
+        COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
+    },
+};
+#[cfg(windows)]
+use windows::core::Interface;
+
 const GOOGLE_FLOW_URL: &str = "https://flow.google";
 const WEBVIEW_LABEL_PREFIX: &str = "google-flow";
 const MAX_CACHED_WEBVIEWS: usize = 10;
@@ -70,6 +81,136 @@ fn profile_path<R: Runtime>(app: &AppHandle<R>, account_id: &str) -> Result<Path
         return Err("invalid account profile path".to_string());
     }
     Ok(profile)
+}
+
+
+#[cfg(windows)]
+fn close_maintenance_webview<R: Runtime>(app: &AppHandle<R>, label: String) {
+    let close_app = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(webview) = close_app.get_webview(&label) {
+            let _ = webview.close();
+        }
+    });
+}
+
+#[cfg(windows)]
+fn begin_windows_disk_cache_clear<R: Runtime>(
+    app: &AppHandle<R>,
+    account_id: &str,
+    profile: PathBuf,
+) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, String> {
+    let regular_label = webview_label(account_id);
+    let maintenance_label = format!("flowpilot-cache-maintenance-{account_id}");
+    let (target, temporary) = if let Some(webview) = app.get_webview(&regular_label) {
+        (webview, false)
+    } else if let Some(webview) = app.get_webview(&maintenance_label) {
+        (webview, true)
+    } else {
+        let window = app
+            .get_window("main")
+            .ok_or_else(|| "main window not found".to_string())?;
+        let url = WebviewUrl::External(
+            "about:blank"
+                .parse()
+                .map_err(|_| "invalid maintenance WebView URL")?,
+        );
+        let builder = WebviewBuilder::new(maintenance_label.clone(), url)
+            .data_directory(profile)
+            .focused(false);
+        let webview = window
+            .add_child(
+                builder,
+                tauri::LogicalPosition::new(-10_000.0, -10_000.0),
+                tauri::LogicalSize::new(1.0, 1.0),
+            )
+            .map_err(|e| e.to_string())?;
+        webview.hide().map_err(|e| e.to_string())?;
+        (webview, true)
+    };
+
+    let target_label = if temporary {
+        maintenance_label
+    } else {
+        regular_label
+    };
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let scheduling_sender = sender.clone();
+    let completion_app = app.clone();
+    let completion_label = target_label.clone();
+    let scheduling_app = app.clone();
+    let scheduling_label = target_label.clone();
+
+    let with_webview_result = target.with_webview(move |platform| {
+        let start_result = (|| -> Result<(), String> {
+            let native = unsafe { platform.controller().CoreWebView2() }
+                .map_err(|e| e.to_string())?;
+            let webview13 = native
+                .cast::<ICoreWebView2_13>()
+                .map_err(|e| e.to_string())?;
+            let profile = unsafe { webview13.Profile() }.map_err(|e| e.to_string())?;
+            let profile2 = profile
+                .cast::<ICoreWebView2Profile2>()
+                .map_err(|e| e.to_string())?;
+            let completion = ClearBrowsingDataCompletedHandler::create(Box::new(
+                move |result| {
+                    let _ = sender.send(result.map_err(|e| e.to_string()));
+                    if temporary {
+                        close_maintenance_webview(&completion_app, completion_label);
+                    }
+                    Ok(())
+                },
+            ));
+            unsafe {
+                profile2.ClearBrowsingData(
+                    COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
+                    &completion,
+                )
+            }
+            .map_err(|e| e.to_string())
+        })();
+
+        if let Err(error) = start_result {
+            let _ = scheduling_sender.send(Err(error));
+            if temporary {
+                close_maintenance_webview(&scheduling_app, scheduling_label);
+            }
+        }
+    });
+
+    if let Err(error) = with_webview_result {
+        if temporary {
+            close_maintenance_webview(app, target_label);
+        }
+        return Err(error.to_string());
+    }
+    Ok(receiver)
+}
+
+pub fn begin_clear_disk_cache<R: Runtime>(
+    app: &AppHandle<R>,
+    account_id: String,
+) -> Result<Option<std::sync::mpsc::Receiver<Result<(), String>>>, String> {
+    validate_account_id(&account_id)?;
+    let profile = profile_path(app, &account_id)?;
+    if !profile.exists() {
+        return Ok(None);
+    }
+
+    #[cfg(windows)]
+    {
+        let state = app.state::<WebviewManager>();
+        let _operation = state
+            .operation
+            .lock()
+            .map_err(|_| "webview state unavailable")?;
+        begin_windows_disk_cache_clear(app, &account_id, profile).map(Some)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err("cache clearing is only supported on Windows".to_string())
+    }
 }
 
 fn validate_bounds(x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {

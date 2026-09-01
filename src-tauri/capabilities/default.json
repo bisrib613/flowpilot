@@ -13,6 +13,7 @@
     "allow-close-google-flow",
     "allow-resize-google-flow",
     "allow-remove-google-flow-account",
+    "allow-clear-google-flow-cache",
     "allow-get-device-id",
     "allow-get-license-state",
     "allow-activate-license",

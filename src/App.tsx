@@ -111,6 +111,9 @@ export default function App() {
   const [navigatorOpen, setNavigatorOpen] = useState(false)
   const [dialog, setDialog] = useState<Account | null>(null)
   const [menu, setMenu] = useState<string | null>(null)
+  const [cacheNotice, setCacheNotice] = useState("")
+  const [clearingCacheId, setClearingCacheId] = useState<string | null>(null)
+  const [clearingAllCaches, setClearingAllCaches] = useState(false)
   const [addAccountOpen, setAddAccountOpen] = useState(false)
   const [newAccountName, setNewAccountName] = useState("")
   const [addAccountError, setAddAccountError] = useState("")
@@ -153,6 +156,43 @@ export default function App() {
       setDialog(null)
     } catch (error) {
       console.error("Unable to remove account", error)
+    }
+  }
+  const handleClearAccountCache = async (a: Account) => {
+    if (clearingCacheId || clearingAllCaches) return
+    setMenu(null)
+    setCacheNotice("")
+    setClearingCacheId(a.id)
+    try {
+      await invoke("clear_google_flow_cache", { accountId: a.id })
+      setCacheNotice(`Cache cleared for ${a.name}. Cookies and login were kept.`)
+    } catch (error) {
+      console.error("Unable to clear account cache", error)
+      setCacheNotice(`Unable to clear cache for ${a.name}. Please try again.`)
+    } finally {
+      setClearingCacheId(null)
+    }
+  }
+  const handleClearAllAccountCaches = async () => {
+    if (clearingCacheId || clearingAllCaches) return
+    setCacheNotice("")
+    setClearingAllCaches(true)
+    try {
+      for (const account of accounts) {
+        setClearingCacheId(account.id)
+        await invoke("clear_google_flow_cache", { accountId: account.id })
+      }
+      setCacheNotice(
+        accounts.length === 0
+          ? "No account caches to clear."
+          : `Cleared caches for ${accounts.length} ${accounts.length === 1 ? "account" : "accounts"}. Cookies and login were kept.`
+      )
+    } catch (error) {
+      console.error("Unable to clear all account caches", error)
+      setCacheNotice("Some account caches could not be cleared. Please try again.")
+    } finally {
+      setClearingCacheId(null)
+      setClearingAllCaches(false)
     }
   }
   const handleToggleFavorite = (a: Account) => {
@@ -470,8 +510,20 @@ export default function App() {
             </div>
           )}
         </header>
+        {cacheNotice && (
+          <div className="cache-status" role="status">
+            <span>{cacheNotice}</span>
+            <button type="button" aria-label="Dismiss cache status" onClick={() => setCacheNotice("")}>×</button>
+          </div>
+        )}
         {view === "settings" ? (
-          <Settings profile={profile} onAvatarChange={updateProfileAvatar} />
+          <Settings
+            profile={profile}
+            onAvatarChange={updateProfileAvatar}
+            accountCount={accounts.length}
+            clearingAllCaches={clearingAllCaches}
+            onClearAllCaches={() => void handleClearAllAccountCaches()}
+          />
         ) : view === "license" ? (
           <LicensePage licenseState={licenseState} onBuy={() => void openLicensePurchase()} />
         ) : view === "updates" ? (
@@ -494,6 +546,8 @@ export default function App() {
                   onFavorite={() => handleToggleFavorite(a)}
                   onDelete={() => handleDelete(a)}
                   onRename={() => handleRename(a)}
+                  onClearCache={() => void handleClearAccountCache(a)}
+                  cacheBusy={clearingCacheId === a.id || clearingAllCaches}
                   dragEnabled={view === "accounts" && !query.trim()}
                   isDragging={draggingId === a.id}
                   isDropTarget={dragTargetId === a.id}
@@ -918,6 +972,8 @@ function Card({
   onFavorite,
   onDelete,
   onRename,
+  onClearCache,
+  cacheBusy,
   dragEnabled,
   isDragging,
   isDropTarget,
@@ -930,6 +986,8 @@ function Card({
   onFavorite: () => void
   onDelete: () => void
   onRename: () => void
+  onClearCache: () => void
+  cacheBusy: boolean
   dragEnabled: boolean
   isDragging: boolean
   isDropTarget: boolean
@@ -953,6 +1011,9 @@ function Card({
               <button onClick={onRename}>Rename</button>
               <button onClick={onFavorite}>
                 {a.favorite ? "Remove from Favorites" : "Add to Favorites"}
+              </button>
+              <button disabled={cacheBusy} onClick={onClearCache}>
+                {cacheBusy ? "Clearing Cache…" : "Clear Cache"}
               </button>
               <div className="menu-rule" />
               <button className="menu-danger" onClick={onDelete}>
@@ -996,9 +1057,15 @@ function DragPreview({ account, point, offset }: { account: Account | null; poin
 function Settings({
   profile,
   onAvatarChange,
+  accountCount,
+  clearingAllCaches,
+  onClearAllCaches,
 }: {
   profile: { name: string; avatar: string | null }
   onAvatarChange: (avatar: string) => void
+  accountCount: number
+  clearingAllCaches: boolean
+  onClearAllCaches: () => void
 }) {
   return (
     <div className="settings">
@@ -1052,6 +1119,24 @@ function Settings({
           </p>
         </div>
         <span className="badge">LOCAL ONLY</span>
+      </section>
+      <section>
+        <div className="setting-icon" aria-hidden="true">↻</div>
+        <div>
+          <div className="eyebrow">STORAGE</div>
+          <h2>Clear all account caches</h2>
+          <p>
+            Removes only the WebView2 disk cache. Cookies, login sessions, local
+            storage, and account profiles stay intact.
+          </p>
+        </div>
+        <button
+          className="secondary"
+          disabled={clearingAllCaches || accountCount === 0}
+          onClick={onClearAllCaches}
+        >
+          {clearingAllCaches ? "Clearing…" : "Clear All Caches"}
+        </button>
       </section>
       <section>
         <div>

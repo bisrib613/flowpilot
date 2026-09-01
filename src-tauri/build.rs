@@ -8,6 +8,7 @@ fn main() {
                 "close_google_flow",
                 "resize_google_flow",
                 "remove_google_flow_account",
+                "clear_google_flow_cache",
                 "begin_blob_download",
                 "write_blob_download_chunk",
                 "complete_blob_download",

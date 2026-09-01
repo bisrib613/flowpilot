@@ -85,6 +85,28 @@ async fn remove_google_flow_account(
 }
 
 #[tauri::command]
+async fn clear_google_flow_cache(
+    app: tauri::AppHandle,
+    account_id: String,
+) -> Result<(), String> {
+    let operation_app = app.clone();
+    let receiver = run_on_ui_thread(&app, move || {
+        webview_manager::begin_clear_disk_cache(&operation_app, account_id)
+    })
+    .await?;
+    let Some(receiver) = receiver else {
+        return Ok(());
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        receiver
+            .recv_timeout(Duration::from_secs(30))
+            .map_err(|_| "Cache clear operation timed out".to_string())?
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     if url != "https://tokotelegram.com/toko/flowpilot" {
         return Err("unsupported external URL".to_string());
@@ -133,6 +155,7 @@ pub fn run() {
             close_google_flow,
             resize_google_flow,
             remove_google_flow_account,
+            clear_google_flow_cache,
             webview_download_bridge::begin_blob_download,
             webview_download_bridge::write_blob_download_chunk,
             webview_download_bridge::complete_blob_download,
