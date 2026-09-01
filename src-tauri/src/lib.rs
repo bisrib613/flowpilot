@@ -4,6 +4,10 @@ use tauri::Manager;
 mod account_store;
 mod license_store;
 mod webview_manager;
+mod webview_download_bridge;
+mod dialog_thread_experiment;
+#[cfg(all(windows, feature = "diag"))]
+mod webview_diagnostics;
 
 async fn run_on_ui_thread<F, T>(app: &tauri::AppHandle, operation: F) -> Result<T, String>
 where
@@ -116,10 +120,12 @@ fn expand_main_window(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    dialog_thread_experiment::init();
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(webview_manager::WebviewManager::default())
+        .manage(webview_download_bridge::DownloadState::default())
         .invoke_handler(tauri::generate_handler![
             expand_main_window,
             open_external_url,
@@ -127,6 +133,13 @@ pub fn run() {
             close_google_flow,
             resize_google_flow,
             remove_google_flow_account,
+            webview_download_bridge::begin_blob_download,
+            webview_download_bridge::write_blob_download_chunk,
+            webview_download_bridge::complete_blob_download,
+            webview_download_bridge::cancel_blob_download,
+            dialog_thread_experiment::debug_trigger_isolated_dialog,
+            #[cfg(all(windows, feature = "diag"))]
+            webview_download_bridge::diagnostic_save_file,
             license_store::get_device_id,
             license_store::get_license_state,
             license_store::activate_license,
