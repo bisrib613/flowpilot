@@ -110,6 +110,8 @@ export default function App() {
   const [fullView, setFullView] = useState(false)
   const [navigatorOpen, setNavigatorOpen] = useState(false)
   const [dialog, setDialog] = useState<Account | null>(null)
+  const [deletingAccountId, setDeletingAccountId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState("")
   const [menu, setMenu] = useState<string | null>(null)
   const [cacheNotice, setCacheNotice] = useState("")
   const [clearingCacheId, setClearingCacheId] = useState<string | null>(null)
@@ -128,6 +130,7 @@ export default function App() {
   const dragSourceIdRef = useRef<string | null>(null)
   const dragTargetIdRef = useRef<string | null>(null)
   const dragInsertAfterRef = useRef(false)
+  const dragCandidateRectsRef = useRef<Array<{ id: string; rect: DOMRect }>>([])
   const handleRename = (a: Account) => {
     const n = prompt("Rename account", a.name)
     if (n)
@@ -135,12 +138,15 @@ export default function App() {
     setMenu(null)
   }
   const handleDelete = (a: Account) => {
+    setDeleteError("")
     setDialog(a)
     setMenu(null)
   }
   const confirmDelete = async () => {
-    if (!dialog) return
+    if (!dialog || deletingAccountId) return
     const removing = dialog
+    setDeleteError("")
+    setDeletingAccountId(removing.id)
     try {
       const profileCleaned = await invoke<boolean>("remove_google_flow_account", {
         accountId: removing.id,
@@ -156,12 +162,15 @@ export default function App() {
       setDialog(null)
     } catch (error) {
       console.error("Unable to remove account", error)
+      setDeleteError("Unable to delete this account. Please try again.")
+    } finally {
+      setDeletingAccountId(null)
     }
   }
   const handleClearAccountCache = async (a: Account) => {
     if (clearingCacheId || clearingAllCaches) return
     setMenu(null)
-    setCacheNotice("")
+    setCacheNotice(`Clearing cache for ${a.name}…`)
     setClearingCacheId(a.id)
     try {
       await invoke("clear_google_flow_cache", { accountId: a.id })
@@ -175,7 +184,11 @@ export default function App() {
   }
   const handleClearAllAccountCaches = async () => {
     if (clearingCacheId || clearingAllCaches) return
-    setCacheNotice("")
+    setCacheNotice(
+      accounts.length === 0
+        ? "No account caches to clear."
+        : `Clearing caches for ${accounts.length} ${accounts.length === 1 ? "account" : "accounts"}…`
+    )
     setClearingAllCaches(true)
     try {
       for (const account of accounts) {
@@ -289,40 +302,53 @@ export default function App() {
     dragPointerIdRef.current = null
     dragSourceIdRef.current = null
     dragTargetIdRef.current = null
+    dragCandidateRectsRef.current = []
     setDraggingId(null)
     setDragTargetId(null)
     setDragPreviewIds(null)
   }
   useEffect(() => {
+    let moveFrame: number | null = null
+    let pendingPoint: { x: number; y: number } | null = null
+
     const accountAtPoint = (x: number, y: number) => {
-      const candidates = Array.from(document.querySelectorAll<HTMLElement>("[data-account-id]"))
-        .filter((element) => element.dataset.accountId !== dragSourceIdRef.current)
-        .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+      const candidates = dragCandidateRectsRef.current
       const hit = candidates.find(({ rect }) =>
         x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
       )
-      if (hit) return { id: hit.element.dataset.accountId || null, after: x > (hit.rect.left + hit.rect.right) / 2 }
-      // Use the nearest card center when the pointer crosses a grid gap or a new row.
-      const nearest = candidates
-        .map(({ element, rect }) => ({
-          element,
-          rect,
-          distance: Math.hypot((rect.left + rect.right) / 2 - x, (rect.top + rect.bottom) / 2 - y),
-        }))
-        .sort((a, b) => a.distance - b.distance)[0]
+      if (hit) return { id: hit.id, after: x > (hit.rect.left + hit.rect.right) / 2 }
+
+      let nearest: { id: string; rect: DOMRect; distance: number } | null = null
+      for (const candidate of candidates) {
+        const distance = Math.hypot(
+          (candidate.rect.left + candidate.rect.right) / 2 - x,
+          (candidate.rect.top + candidate.rect.bottom) / 2 - y
+        )
+        if (!nearest || distance < nearest.distance) {
+          nearest = { ...candidate, distance }
+        }
+      }
       if (!nearest) return null
-      return { id: nearest.element.dataset.accountId || null, after: x > (nearest.rect.left + nearest.rect.right) / 2 }
+      return {
+        id: nearest.id,
+        after: x > (nearest.rect.left + nearest.rect.right) / 2,
+      }
     }
-    const onMove = (event: PointerEvent) => {
-      if (dragPointerIdRef.current !== event.pointerId) return
-      event.preventDefault()
-      setDragPoint({ x: event.clientX, y: event.clientY })
-      const hit = accountAtPoint(event.clientX, event.clientY)
+
+    const processPoint = (x: number, y: number) => {
+      setDragPoint({ x, y })
+      const hit = accountAtPoint(x, y)
       const targetId = hit?.id || null
-      dragInsertAfterRef.current = hit?.after || false
+      const insertAfter = hit?.after || false
+      const placementChanged =
+        targetId !== dragTargetIdRef.current ||
+        insertAfter !== dragInsertAfterRef.current
+      dragInsertAfterRef.current = insertAfter
       dragTargetIdRef.current = targetId
       setDragTargetId(targetId)
-      if (targetId) setDragPreviewIds((current) => {
+      if (!targetId || !placementChanged) return
+
+      setDragPreviewIds((current) => {
         const ids = current || accounts.map((a) => a.id)
         const from = ids.indexOf(dragSourceIdRef.current || "")
         const to = ids.indexOf(targetId)
@@ -330,20 +356,45 @@ export default function App() {
         const next = [...ids]
         const [moved] = next.splice(from, 1)
         const targetIndex = next.indexOf(targetId)
-        next.splice(targetIndex + (dragInsertAfterRef.current ? 1 : 0), 0, moved)
+        next.splice(targetIndex + (insertAfter ? 1 : 0), 0, moved)
         return next
       })
     }
+
+    const cancelMoveFrame = () => {
+      if (moveFrame !== null) cancelAnimationFrame(moveFrame)
+      moveFrame = null
+      pendingPoint = null
+    }
+
+    const onMove = (event: PointerEvent) => {
+      if (dragPointerIdRef.current !== event.pointerId) return
+      event.preventDefault()
+      pendingPoint = { x: event.clientX, y: event.clientY }
+      if (moveFrame !== null) return
+      moveFrame = requestAnimationFrame(() => {
+        moveFrame = null
+        const point = pendingPoint
+        pendingPoint = null
+        if (point) processPoint(point.x, point.y)
+      })
+    }
     const onUp = (event: PointerEvent) => {
-      if (dragPointerIdRef.current === event.pointerId) finishPointerDrag(true)
+      if (dragPointerIdRef.current !== event.pointerId) return
+      cancelMoveFrame()
+      processPoint(event.clientX, event.clientY)
+      finishPointerDrag(true)
     }
     const onCancel = (event: PointerEvent) => {
-      if (dragPointerIdRef.current === event.pointerId) finishPointerDrag(false)
+      if (dragPointerIdRef.current !== event.pointerId) return
+      cancelMoveFrame()
+      finishPointerDrag(false)
     }
     window.addEventListener("pointermove", onMove, { passive: false })
     window.addEventListener("pointerup", onUp)
     window.addEventListener("pointercancel", onCancel)
     return () => {
+      cancelMoveFrame()
       window.removeEventListener("pointermove", onMove)
       window.removeEventListener("pointerup", onUp)
       window.removeEventListener("pointercancel", onCancel)
@@ -360,6 +411,15 @@ export default function App() {
     dragSourceIdRef.current = id
     dragTargetIdRef.current = null
     dragInsertAfterRef.current = false
+    dragCandidateRectsRef.current = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-account-id]")
+    )
+      .filter((element) => element.dataset.accountId !== id)
+      .map((element) => ({
+        id: element.dataset.accountId || "",
+        rect: element.getBoundingClientRect(),
+      }))
+      .filter((candidate) => candidate.id)
     setDraggingId(id)
     setDragTargetId(null)
     setDragPreviewIds(accounts.map((a) => a.id))
@@ -569,15 +629,21 @@ export default function App() {
                 This removes the account card from Flowpilot. Your Google
                 account is not affected.
               </p>
+              {deleteError && <p className="dialog-error">{deleteError}</p>}
               <div className="dialog-actions">
-                <button className="secondary" onClick={() => setDialog(null)}>
+                <button
+                  className="secondary"
+                  disabled={deletingAccountId === dialog.id}
+                  onClick={() => setDialog(null)}
+                >
                   Cancel
                 </button>
                 <button
                   className="danger"
+                  disabled={deletingAccountId === dialog.id}
                   onClick={() => void confirmDelete()}
                 >
-                  Delete account
+                  {deletingAccountId === dialog.id ? "Deleting…" : "Delete account"}
                 </button>
               </div>
             </div>
@@ -1170,11 +1236,14 @@ function FlowShell({
   onBack: () => void
 }) {
   const [status, setStatus] = useState("Loading Google Flow...")
+  const [webviewLoading, setWebviewLoading] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     let cancelled = false
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
+    setStatus("Loading Google Flow...")
+    setWebviewLoading(true)
     invoke("open_google_flow", {
       accountId: account.id,
       x: rect.left,
@@ -1183,12 +1252,18 @@ function FlowShell({
       height: rect.height,
     })
       .then(() => {
-        if (!cancelled) setStatus("Google Flow ready")
-        containerRef.current?.dispatchEvent(new Event("flowpilot-webview-ready"))
+        if (!cancelled) {
+          setStatus("Google Flow ready")
+          setWebviewLoading(false)
+          containerRef.current?.dispatchEvent(new Event("flowpilot-webview-ready"))
+        }
       })
       .catch((error) => {
         console.error("Google Flow WebView failed", error)
-        if (!cancelled) setStatus("Unable to open Google Flow. Please try again.")
+        if (!cancelled) {
+          setStatus("Unable to open Google Flow. Please try again.")
+          setWebviewLoading(false)
+        }
       })
     return () => {
       cancelled = true
@@ -1198,9 +1273,31 @@ function FlowShell({
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
+
+    let resizeFrame: number | null = null
+    let lastBounds: [number, number, number, number] | null = null
     const syncBounds = () => {
-      const rect = container.getBoundingClientRect()
-      void invoke("resize_google_flow", { accountId: account.id, x: rect.left, y: rect.top, width: rect.width, height: rect.height })
+      if (resizeFrame !== null) return
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = null
+        const rect = container.getBoundingClientRect()
+        const bounds: [number, number, number, number] = [
+          Math.round(rect.left * 100) / 100,
+          Math.round(rect.top * 100) / 100,
+          Math.round(rect.width * 100) / 100,
+          Math.round(rect.height * 100) / 100,
+        ]
+        if (bounds[2] <= 0 || bounds[3] <= 0) return
+        if (lastBounds?.every((value, index) => value === bounds[index])) return
+        lastBounds = bounds
+        void invoke("resize_google_flow", {
+          accountId: account.id,
+          x: bounds[0],
+          y: bounds[1],
+          width: bounds[2],
+          height: bounds[3],
+        })
+      })
     }
     const onReady = () => syncBounds()
     container.addEventListener("flowpilot-webview-ready", onReady)
@@ -1208,10 +1305,11 @@ function FlowShell({
     observer.observe(container)
     syncBounds()
     return () => {
+      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
       observer.disconnect()
       container.removeEventListener("flowpilot-webview-ready", onReady)
     }
-  }, [navigatorOpen, fullView])
+  }, [account.id])
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && fullView) onToggleFullView()
@@ -1220,7 +1318,7 @@ function FlowShell({
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [fullView, onToggleFullView])
   return (
-    <div className={`flow-shell ${navigatorOpen ? "navigator-open" : ""}`}>
+    <div className={`flow-shell ${navigatorOpen ? "navigator-open" : ""}`} aria-busy={webviewLoading}>
       <div className="flow-bar">
         <button className="back" onClick={onBack}>‹ Accounts</button>
         <span>{status}</span>
@@ -1237,6 +1335,7 @@ function FlowShell({
                   <button
                     key={candidate.id}
                     className={candidate.id === account.id ? "selected" : ""}
+                    disabled={webviewLoading}
                     onClick={() => onSelectAccount(candidate)}
                   >
                     <img src={candidate.avatarUrl || "/google-flow.png"} alt="" />

@@ -29,3 +29,5 @@
 .cache-status{max-width:900px;margin:-22px 0 24px;padding:11px 14px;border:1px solid #4ac97e66;border-radius:10px;background:#162019;color:#b6f09c;font-size:12px;display:flex;align-items:center;gap:12px}
 .cache-status span{flex:1}
 .cache-status button{background:transparent;color:#9b9c9e;font-size:18px;line-height:1}
+
+.dialog button:disabled,.navigator-menu button:disabled{opacity:.5;cursor:wait}

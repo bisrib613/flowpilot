@@ -78,10 +78,38 @@ async fn remove_google_flow_account(
     account_id: String,
 ) -> Result<bool, String> {
     let operation_app = app.clone();
-    run_on_ui_thread(&app, move || {
+    let cleanup_account_id = account_id.clone();
+    let profile = run_on_ui_thread(&app, move || {
         webview_manager::remove(&operation_app, account_id)
     })
+    .await?;
+    let Some(profile) = profile else {
+        return Ok(true);
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        for attempt in 0..3 {
+            match std::fs::remove_dir_all(&profile) {
+                Ok(()) => return true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+                Err(error) if attempt < 2 => {
+                    std::thread::sleep(Duration::from_millis(200));
+                    eprintln!(
+                        "[flowpilot-webview] profile cleanup retry account={cleanup_account_id}: {error}"
+                    );
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[flowpilot-webview] profile cleanup pending account={cleanup_account_id}: {error}"
+                    );
+                    return false;
+                }
+            }
+        }
+        false
+    })
     .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

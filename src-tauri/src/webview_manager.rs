@@ -19,7 +19,7 @@ use windows::core::Interface;
 
 const GOOGLE_FLOW_URL: &str = "https://flow.google";
 const WEBVIEW_LABEL_PREFIX: &str = "google-flow";
-const MAX_CACHED_WEBVIEWS: usize = 10;
+const MAX_CACHED_WEBVIEWS: usize = 5;
 
 pub struct WebviewManager {
     active_account_id: Mutex<Option<String>>,
@@ -366,12 +366,12 @@ pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>) -> Resu
             if let Some(webview) = app.get_webview(&webview_label(&active_id)) {
                 webview.hide().map_err(|e| e.to_string())?;
             }
+            *state
+                .visible
+                .lock()
+                .map_err(|_| "webview state unavailable")? = false;
         }
     }
-    *state
-        .visible
-        .lock()
-        .map_err(|_| "webview state unavailable")? = false;
     drop(operation);
     Ok(())
 }
@@ -405,7 +405,7 @@ pub fn resize<R: Runtime>(
     Ok(())
 }
 
-pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<bool, String> {
+pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<Option<PathBuf>, String> {
     validate_account_id(&account_id)?;
     let state = app.state::<WebviewManager>();
     let _operation = state
@@ -443,14 +443,9 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<bool
     }
 
     let profile = profile_path(app, &account_id)?;
-    if !profile.exists() {
-        return Ok(true);
-    }
-    match std::fs::remove_dir_all(&profile) {
-        Ok(()) => Ok(true),
-        Err(error) => {
-            eprintln!("[flowpilot-webview] profile cleanup pending account={account_id}: {error}");
-            Ok(false)
-        }
+    if profile.exists() {
+        Ok(Some(profile))
+    } else {
+        Ok(None)
     }
 }
