@@ -6,13 +6,17 @@ on:
       tag:
         description: Release tag to build
         required: true
-        default: v1.2.1
+        default: v1.2.2
+  push:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]')
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -35,8 +39,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ inputs.tag }}
-          releaseName: Flowpilot ${{ inputs.tag }}
+          tagName: ${{ inputs.tag || 'v1.2.2' }}
+          releaseName: Flowpilot ${{ inputs.tag || 'v1.2.2' }}
           releaseBody: Flowpilot Windows installer.
           releaseDraft: false
           prerelease: false
