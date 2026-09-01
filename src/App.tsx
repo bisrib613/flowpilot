@@ -75,8 +75,8 @@ const starter: Account[] = [
 ]
 
 export default function App() {
-  const [licensed, setLicensed] = useState(false)
-  const [licenseChecking, setLicenseChecking] = useState(true)
+  const [licensed, setLicensed] = useState(true)
+  const [licenseChecking, setLicenseChecking] = useState(false)
   const [licenseError, setLicenseError] = useState("")
   const [licenseState, setLicenseState] = useState<LicenseState | null>(null)
   const [deviceId, setDeviceId] = useState("")
@@ -119,7 +119,7 @@ export default function App() {
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
   const [dragTargetId, setDragTargetId] = useState<string | null>(null)
   const [dragPreviewIds, setDragPreviewIds] = useState<string[] | null>(null)
-  useEffect(() => { void (async () => { try { const id=await invoke<string>("get_device_id"); setDeviceId(id); const saved=await invoke<LicenseState|null>("get_license_state"); if(!saved?.status){setLicenseChecking(false);return} setLicenseState(saved); const validated=await invoke<LicenseState>("validate_license"); setLicenseState(validated); setLicensed(true); await invoke("expand_main_window"); const w=getCurrentWindow(); await w.show(); await w.setFocus() } catch (error) { setLicenseError(typeof error === "string" ? error : "Server Unavailable") } finally { setLicenseChecking(false) } })() }, [])
+  useEffect(() => { void (async () => { try { const id=await invoke<string>("get_device_id"); setDeviceId(id); const saved=await invoke<LicenseState|null>("get_license_state"); if(saved?.status) setLicenseState(saved) } catch(e) { console.warn("License check failed:",e) } })() }, [])
   const dragSourceRef = useRef<HTMLElement | null>(null)
   const dragPointerIdRef = useRef<number | null>(null)
   const dragSourceIdRef = useRef<string | null>(null)
@@ -356,7 +356,7 @@ export default function App() {
           </button>
           {licenseError && <p className="dialog-error">{licenseError}</p>}
           <div className="link">
-            Don’t have a license?{" "}
+            Don't have a license?{" "}
             <a
               href={LICENSE_PURCHASE_URL}
               onClick={(e) => {
@@ -652,7 +652,7 @@ function SidebarIcon({ name }: { name: "accounts" | "favorites" | "license" | "u
     license: <><path d="M7 4h10l2 3v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7l2-3Z" /><path d="M9 4v4h6V4M9 13h6M9 17h4" /></>,
     updates: <><path d="M20 11a8 8 0 0 0-14.7-4L4 9" /><path d="M4 4v5h5M4 13a8 8 0 0 0 14.7 4L20 15" /><path d="M20 20v-5h-5" /></>,
     info: <><circle cx="12" cy="12" r="8.5" /><path d="M12 11v5M12 8h.01" /></>,
-    settings: <><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="9" cy="6" r="1.8" fill="currentColor" stroke="none" /><circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none" /><circle cx="10" cy="18" r="1.8" fill="currentColor" stroke="none" /></>,
+    settings: <><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="9" cy="6" r="1.8" fill="currentColor" stroke="none" /><circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none" /><circle cx="9" cy="18" r="1.8" fill="currentColor" stroke="none" /></>,
   }
   return <svg className="sidebar-icon" {...common}>{paths[name]}</svg>
 }
