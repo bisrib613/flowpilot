@@ -8,6 +8,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
 import { loadAccounts, saveAccounts } from "./services/account-store"
 
+type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt"
 type Account = {
   id: string
   name: string
@@ -16,7 +17,15 @@ type Account = {
   avatar: string
   favorite: boolean
   order: number
+  service?: ServiceId
 }
+const SERVICES: Record<ServiceId, { name: string; shortName: string; logo: string; url: string }> = {
+  flow: { name: "Google Flow", shortName: "Flow", logo: "/flow-logo.png", url: "https://labs.google/fx/tools/flow" },
+  dola: { name: "Dola", shortName: "Dola", logo: "/dola-logo.png", url: "https://www.dola.com/" },
+  leonardo: { name: "Leonardo AI", shortName: "Leonardo", logo: "/leonardo-logo.png", url: "https://app.leonardo.ai/" },
+  chatgpt: { name: "ChatGPT", shortName: "ChatGPT", logo: "/chatgpt-logo.png", url: "https://chatgpt.com/" },
+}
+const serviceOf = (account: Account): ServiceId => account.service || "flow"
 const LICENSE_PURCHASE_URL = "https://tokotelegram.com/toko/flowpilot"
 const TELEGRAM_CHANNEL_URL = ""
 const APP_VERSION = packageJson.version
@@ -53,6 +62,7 @@ const starter: Account[] = [
     avatar: "YK",
     favorite: true,
     order: 0,
+    service: "flow",
   },
   {
     id: "client",
@@ -62,6 +72,7 @@ const starter: Account[] = [
     avatar: "CA",
     favorite: false,
     order: 1,
+    service: "flow",
   },
   {
     id: "backup",
@@ -71,6 +82,7 @@ const starter: Account[] = [
     avatar: "B",
     favorite: false,
     order: 2,
+    service: "flow",
   },
 ]
 
@@ -82,6 +94,7 @@ export default function App() {
   const [deviceId, setDeviceId] = useState("")
   const [key, setKey] = useState("")
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [activeService, setActiveService] = useState<ServiceId>("flow")
   const [accountsLoaded, setAccountsLoaded] = useState(false)
   const [profile, setProfile] = useState<{
     name: string
@@ -110,8 +123,6 @@ export default function App() {
   const [fullView, setFullView] = useState(false)
   const [navigatorOpen, setNavigatorOpen] = useState(false)
   const [dialog, setDialog] = useState<Account | null>(null)
-  const [deletingAccountId, setDeletingAccountId] = useState<string | null>(null)
-  const [deleteError, setDeleteError] = useState("")
   const [menu, setMenu] = useState<string | null>(null)
   const [cacheNotice, setCacheNotice] = useState("")
   const [clearingCacheId, setClearingCacheId] = useState<string | null>(null)
@@ -130,7 +141,6 @@ export default function App() {
   const dragSourceIdRef = useRef<string | null>(null)
   const dragTargetIdRef = useRef<string | null>(null)
   const dragInsertAfterRef = useRef(false)
-  const dragCandidateRectsRef = useRef<Array<{ id: string; rect: DOMRect }>>([])
   const handleRename = (a: Account) => {
     const n = prompt("Rename account", a.name)
     if (n)
@@ -138,18 +148,16 @@ export default function App() {
     setMenu(null)
   }
   const handleDelete = (a: Account) => {
-    setDeleteError("")
     setDialog(a)
     setMenu(null)
   }
   const confirmDelete = async () => {
-    if (!dialog || deletingAccountId) return
+    if (!dialog) return
     const removing = dialog
-    setDeleteError("")
-    setDeletingAccountId(removing.id)
     try {
       const profileCleaned = await invoke<boolean>("remove_google_flow_account", {
         accountId: removing.id,
+        service: serviceOf(removing),
       })
       setAccounts((current) => current.filter((account) => account.id !== removing.id))
       if (active?.id === removing.id) {
@@ -162,18 +170,15 @@ export default function App() {
       setDialog(null)
     } catch (error) {
       console.error("Unable to remove account", error)
-      setDeleteError("Unable to delete this account. Please try again.")
-    } finally {
-      setDeletingAccountId(null)
     }
   }
   const handleClearAccountCache = async (a: Account) => {
     if (clearingCacheId || clearingAllCaches) return
     setMenu(null)
-    setCacheNotice(`Clearing cache for ${a.name}…`)
+    setCacheNotice("")
     setClearingCacheId(a.id)
     try {
-      await invoke("clear_google_flow_cache", { accountId: a.id })
+      await invoke("clear_google_flow_cache", { accountId: a.id, service: serviceOf(a) })
       setCacheNotice(`Cache cleared for ${a.name}. Cookies and login were kept.`)
     } catch (error) {
       console.error("Unable to clear account cache", error)
@@ -184,16 +189,12 @@ export default function App() {
   }
   const handleClearAllAccountCaches = async () => {
     if (clearingCacheId || clearingAllCaches) return
-    setCacheNotice(
-      accounts.length === 0
-        ? "No account caches to clear."
-        : `Clearing caches for ${accounts.length} ${accounts.length === 1 ? "account" : "accounts"}…`
-    )
+    setCacheNotice("")
     setClearingAllCaches(true)
     try {
       for (const account of accounts) {
         setClearingCacheId(account.id)
-        await invoke("clear_google_flow_cache", { accountId: account.id })
+        await invoke("clear_google_flow_cache", { accountId: account.id, service: serviceOf(account) })
       }
       setCacheNotice(
         accounts.length === 0
@@ -233,10 +234,11 @@ export default function App() {
       id: crypto.randomUUID(),
       name,
       email: null,
-      avatarUrl: "/google-flow.png",
+      avatarUrl: SERVICES[activeService].logo,
       avatar: "NF",
       favorite: false,
       order: accounts.length,
+      service: activeService,
     }
     setAccounts([...accounts, a])
     setAddAccountOpen(false)
@@ -265,21 +267,25 @@ export default function App() {
       setNavigatorOpen(false)
     }
   }, [active, accounts, view, fullView, navigatorOpen])
-  const favoriteCount = accounts.filter((a) => a.favorite).length
+  const serviceAccounts = useMemo(
+    () => accounts.filter((account) => serviceOf(account) === activeService),
+    [accounts, activeService]
+  )
+  const favoriteCount = serviceAccounts.filter((a) => a.favorite).length
   const visible = useMemo(
     () =>
-      accounts.filter(
+      serviceAccounts.filter(
         (a) =>
           (view !== "favorites" || a.favorite) &&
           `${a.name} ${a.email}`.toLowerCase().includes(query.toLowerCase())
       ),
-    [accounts, query, view]
+    [serviceAccounts, query, view]
   )
   const displayed = useMemo(() => {
     if (!dragPreviewIds || view !== "accounts") return visible
-    const byId = new Map(accounts.map((account) => [account.id, account]))
+    const byId = new Map(serviceAccounts.map((account) => [account.id, account]))
     return dragPreviewIds.map((id) => byId.get(id)).filter(Boolean) as Account[]
-  }, [accounts, dragPreviewIds, view, visible])
+  }, [serviceAccounts, dragPreviewIds, view, visible])
   const finishPointerDrag = (commit: boolean) => {
     const sourceId = dragSourceIdRef.current
     const targetId = dragTargetIdRef.current
@@ -302,53 +308,40 @@ export default function App() {
     dragPointerIdRef.current = null
     dragSourceIdRef.current = null
     dragTargetIdRef.current = null
-    dragCandidateRectsRef.current = []
     setDraggingId(null)
     setDragTargetId(null)
     setDragPreviewIds(null)
   }
   useEffect(() => {
-    let moveFrame: number | null = null
-    let pendingPoint: { x: number; y: number } | null = null
-
     const accountAtPoint = (x: number, y: number) => {
-      const candidates = dragCandidateRectsRef.current
+      const candidates = Array.from(document.querySelectorAll<HTMLElement>("[data-account-id]"))
+        .filter((element) => element.dataset.accountId !== dragSourceIdRef.current)
+        .map((element) => ({ element, rect: element.getBoundingClientRect() }))
       const hit = candidates.find(({ rect }) =>
         x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
       )
-      if (hit) return { id: hit.id, after: x > (hit.rect.left + hit.rect.right) / 2 }
-
-      let nearest: { id: string; rect: DOMRect; distance: number } | null = null
-      for (const candidate of candidates) {
-        const distance = Math.hypot(
-          (candidate.rect.left + candidate.rect.right) / 2 - x,
-          (candidate.rect.top + candidate.rect.bottom) / 2 - y
-        )
-        if (!nearest || distance < nearest.distance) {
-          nearest = { ...candidate, distance }
-        }
-      }
+      if (hit) return { id: hit.element.dataset.accountId || null, after: x > (hit.rect.left + hit.rect.right) / 2 }
+      // Use the nearest card center when the pointer crosses a grid gap or a new row.
+      const nearest = candidates
+        .map(({ element, rect }) => ({
+          element,
+          rect,
+          distance: Math.hypot((rect.left + rect.right) / 2 - x, (rect.top + rect.bottom) / 2 - y),
+        }))
+        .sort((a, b) => a.distance - b.distance)[0]
       if (!nearest) return null
-      return {
-        id: nearest.id,
-        after: x > (nearest.rect.left + nearest.rect.right) / 2,
-      }
+      return { id: nearest.element.dataset.accountId || null, after: x > (nearest.rect.left + nearest.rect.right) / 2 }
     }
-
-    const processPoint = (x: number, y: number) => {
-      setDragPoint({ x, y })
-      const hit = accountAtPoint(x, y)
+    const onMove = (event: PointerEvent) => {
+      if (dragPointerIdRef.current !== event.pointerId) return
+      event.preventDefault()
+      setDragPoint({ x: event.clientX, y: event.clientY })
+      const hit = accountAtPoint(event.clientX, event.clientY)
       const targetId = hit?.id || null
-      const insertAfter = hit?.after || false
-      const placementChanged =
-        targetId !== dragTargetIdRef.current ||
-        insertAfter !== dragInsertAfterRef.current
-      dragInsertAfterRef.current = insertAfter
+      dragInsertAfterRef.current = hit?.after || false
       dragTargetIdRef.current = targetId
       setDragTargetId(targetId)
-      if (!targetId || !placementChanged) return
-
-      setDragPreviewIds((current) => {
+      if (targetId) setDragPreviewIds((current) => {
         const ids = current || accounts.map((a) => a.id)
         const from = ids.indexOf(dragSourceIdRef.current || "")
         const to = ids.indexOf(targetId)
@@ -356,45 +349,20 @@ export default function App() {
         const next = [...ids]
         const [moved] = next.splice(from, 1)
         const targetIndex = next.indexOf(targetId)
-        next.splice(targetIndex + (insertAfter ? 1 : 0), 0, moved)
+        next.splice(targetIndex + (dragInsertAfterRef.current ? 1 : 0), 0, moved)
         return next
       })
     }
-
-    const cancelMoveFrame = () => {
-      if (moveFrame !== null) cancelAnimationFrame(moveFrame)
-      moveFrame = null
-      pendingPoint = null
-    }
-
-    const onMove = (event: PointerEvent) => {
-      if (dragPointerIdRef.current !== event.pointerId) return
-      event.preventDefault()
-      pendingPoint = { x: event.clientX, y: event.clientY }
-      if (moveFrame !== null) return
-      moveFrame = requestAnimationFrame(() => {
-        moveFrame = null
-        const point = pendingPoint
-        pendingPoint = null
-        if (point) processPoint(point.x, point.y)
-      })
-    }
     const onUp = (event: PointerEvent) => {
-      if (dragPointerIdRef.current !== event.pointerId) return
-      cancelMoveFrame()
-      processPoint(event.clientX, event.clientY)
-      finishPointerDrag(true)
+      if (dragPointerIdRef.current === event.pointerId) finishPointerDrag(true)
     }
     const onCancel = (event: PointerEvent) => {
-      if (dragPointerIdRef.current !== event.pointerId) return
-      cancelMoveFrame()
-      finishPointerDrag(false)
+      if (dragPointerIdRef.current === event.pointerId) finishPointerDrag(false)
     }
     window.addEventListener("pointermove", onMove, { passive: false })
     window.addEventListener("pointerup", onUp)
     window.addEventListener("pointercancel", onCancel)
     return () => {
-      cancelMoveFrame()
       window.removeEventListener("pointermove", onMove)
       window.removeEventListener("pointerup", onUp)
       window.removeEventListener("pointercancel", onCancel)
@@ -411,15 +379,6 @@ export default function App() {
     dragSourceIdRef.current = id
     dragTargetIdRef.current = null
     dragInsertAfterRef.current = false
-    dragCandidateRectsRef.current = Array.from(
-      document.querySelectorAll<HTMLElement>("[data-account-id]")
-    )
-      .filter((element) => element.dataset.accountId !== id)
-      .map((element) => ({
-        id: element.dataset.accountId || "",
-        rect: element.getBoundingClientRect(),
-      }))
-      .filter((candidate) => candidate.id)
     setDraggingId(id)
     setDragTargetId(null)
     setDragPreviewIds(accounts.map((a) => a.id))
@@ -482,7 +441,7 @@ export default function App() {
         <main className="content flow-content">
           <FlowShell
             account={active}
-            accounts={accounts}
+            accounts={serviceAccounts}
             fullView={fullView}
             navigatorOpen={navigatorOpen}
             onToggleFullView={() => {
@@ -495,7 +454,7 @@ export default function App() {
               if (account.id !== active.id) setActive(account)
             }}
             onBack={() => {
-              void invoke("close_google_flow")
+              void invoke("close_google_flow", { accountId: active.id, service: serviceOf(active) })
               setFullView(false)
               setNavigatorOpen(false)
               setView("accounts")
@@ -529,25 +488,25 @@ export default function App() {
                 ? "Updates"
                 : view === "info"
                 ? "How to Use Flowpilot"
-                : "Google Flow Accounts"}
+                : `${SERVICES[activeService].name} Accounts`}
             </h1>
             <p>
               {view === "settings"
                 ? "Keep Flowpilot personal, private, and ready to use."
                 : view === "favorites"
-                ? "Your favorite Google Flow accounts in one place."
+                ? `Your favorite ${SERVICES[activeService].name} accounts in one place.`
                 : view === "license"
                 ? "Choose the Flowpilot license that fits your needs."
                 : view === "updates"
                 ? "Keep Flowpilot up to date with the latest version."
                 : view === "info"
-                ? "A quick guide to managing your Google Flow accounts."
-                : "Manage your Google Flow accounts in one place."}
+                ? "A quick guide to managing your AI workspaces."
+                : `Manage your ${SERVICES[activeService].name} accounts in one place.`}
             </p>
             {view === "accounts" && (
               <div className="account-count">
-                {accounts.length}{" "}
-                {accounts.length === 1 ? "Account" : "Accounts"}
+                {serviceAccounts.length}{" "}
+                {serviceAccounts.length === 1 ? "Account" : "Accounts"}
               </div>
             )}
             {view === "favorites" && (
@@ -570,6 +529,25 @@ export default function App() {
             </div>
           )}
         </header>
+        {(view === "accounts" || view === "favorites") && (
+          <nav className="service-switcher" aria-label="AI service">
+            {(Object.keys(SERVICES) as ServiceId[]).map((serviceId) => (
+              <button
+                key={serviceId}
+                className={activeService === serviceId ? "active" : ""}
+                onClick={() => {
+                  setActiveService(serviceId)
+                  setQuery("")
+                  setMenu(null)
+                }}
+              >
+                <img src={SERVICES[serviceId].logo} alt="" />
+                <span>{SERVICES[serviceId].shortName}</span>
+                <b>{accounts.filter((account) => serviceOf(account) === serviceId).length}</b>
+              </button>
+            ))}
+          </nav>
+        )}
         {cacheNotice && (
           <div className="cache-status" role="status">
             <span>{cacheNotice}</span>
@@ -615,7 +593,7 @@ export default function App() {
                 />
               ))}
               {view === "accounts" && (
-                <AddAccountCard onAdd={handleAddAccount} />
+                <AddAccountCard onAdd={handleAddAccount} service={activeService} />
               )}
             </div>
             {draggingId && <DragPreview account={accounts.find((a) => a.id === draggingId) || null} point={dragPoint} offset={dragOffset} />}
@@ -629,21 +607,15 @@ export default function App() {
                 This removes the account card from Flowpilot. Your Google
                 account is not affected.
               </p>
-              {deleteError && <p className="dialog-error">{deleteError}</p>}
               <div className="dialog-actions">
-                <button
-                  className="secondary"
-                  disabled={deletingAccountId === dialog.id}
-                  onClick={() => setDialog(null)}
-                >
+                <button className="secondary" onClick={() => setDialog(null)}>
                   Cancel
                 </button>
                 <button
                   className="danger"
-                  disabled={deletingAccountId === dialog.id}
                   onClick={() => void confirmDelete()}
                 >
-                  {deletingAccountId === dialog.id ? "Deleting…" : "Delete account"}
+                  Delete account
                 </button>
               </div>
             </div>
@@ -653,7 +625,7 @@ export default function App() {
           <div className="overlay">
             <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="add-account-title">
               <h2 id="add-account-title">Add Account</h2>
-              <p>Enter a name for this Google Flow account.</p>
+              <p>Enter a name for this {SERVICES[activeService].name} account.</p>
               <input
                 autoFocus
                 value={newAccountName}
@@ -1020,12 +992,12 @@ function InfoPage() {
   )
 }
 
-function AddAccountCard({ onAdd }: { onAdd: () => void }) {
+function AddAccountCard({ onAdd, service = "flow" }: { onAdd: () => void; service?: ServiceId }) {
   return (
     <button className="add-card" onClick={onAdd}>
       <span>＋</span>
       <b>Add Account</b>
-      <small>Add another Google Flow account</small>
+      <small>Add another {SERVICES[service].name} account</small>
     </button>
   )
 }
@@ -1059,6 +1031,7 @@ function Card({
   isDropTarget: boolean
   onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void
 }) {
+  const service = SERVICES[serviceOf(a)]
   return (
     <article data-account-id={a.id} onPointerDown={onPointerDown} className={`card ${dragEnabled ? "is-draggable" : ""} ${isDragging ? "is-dragging" : ""} ${isDropTarget ? "is-drop-target" : ""}`}>
       <div className="card-top">
@@ -1091,14 +1064,14 @@ function Card({
       </div>
       <div className="avatar large">
         <img
-          src={a.avatarUrl || "/google-flow.png"}
-          alt="Google Flow account"
+          src={a.avatarUrl || service.logo}
+          alt={`${service.name} account`}
           draggable={false}
         />
       </div>
       <h2>{a.name}</h2>
       <button className="primary wide" onClick={onOpen}>
-        Open Google Flow <span>→</span>
+        Open {service.shortName} <span>→</span>
       </button>
       <div className="card-links">
         <button onClick={onRename}>✎ Rename</button>
@@ -1109,13 +1082,14 @@ function Card({
 }
 function DragPreview({ account, point, offset }: { account: Account | null; point: { x: number; y: number }; offset: { x: number; y: number } }) {
   if (!account) return null
+  const service = SERVICES[serviceOf(account)]
   return (
     <div className="custom-drag-layer" aria-hidden="true">
       <article className="drag-preview-card" style={{ transform: `translate3d(${point.x - offset.x}px, ${point.y - offset.y}px, 0) scale(1.04) rotate(2deg)` }}>
         <div className="card-top"><span className={`star ${account.favorite ? "fav" : ""}`}>{account.favorite ? "★" : "☆"}</span><span className="more">•••</span></div>
-        <div className="avatar large"><img src={account.avatarUrl || "/google-flow.png"} alt="" /></div>
+        <div className="avatar large"><img src={account.avatarUrl || service.logo} alt="" /></div>
         <h2>{account.name}</h2>
-        <div className="primary wide">Open Google Flow <span>→</span></div>
+        <div className="primary wide">Open {service.shortName} <span>→</span></div>
       </article>
     </div>
   )
@@ -1235,69 +1209,41 @@ function FlowShell({
   onSelectAccount: (account: Account) => void
   onBack: () => void
 }) {
-  const [status, setStatus] = useState("Loading Google Flow...")
-  const [webviewLoading, setWebviewLoading] = useState(true)
+  const serviceId = serviceOf(account)
+  const service = SERVICES[serviceId]
+  const [status, setStatus] = useState(`Loading ${service.name}...`)
   const containerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     let cancelled = false
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
-    setStatus("Loading Google Flow...")
-    setWebviewLoading(true)
     invoke("open_google_flow", {
       accountId: account.id,
+      service: serviceId,
       x: rect.left,
       y: rect.top,
       width: rect.width,
       height: rect.height,
     })
       .then(() => {
-        if (!cancelled) {
-          setStatus("Google Flow ready")
-          setWebviewLoading(false)
-          containerRef.current?.dispatchEvent(new Event("flowpilot-webview-ready"))
-        }
+        if (!cancelled) setStatus(`${service.name} ready`)
+        containerRef.current?.dispatchEvent(new Event("flowpilot-webview-ready"))
       })
       .catch((error) => {
-        console.error("Google Flow WebView failed", error)
-        if (!cancelled) {
-          setStatus("Unable to open Google Flow. Please try again.")
-          setWebviewLoading(false)
-        }
+        console.error(`${service.name} WebView failed`, error)
+        if (!cancelled) setStatus(`Unable to open ${service.name}. Please try again.`)
       })
     return () => {
       cancelled = true
-      void invoke("close_google_flow", { accountId: account.id })
+      void invoke("close_google_flow", { accountId: account.id, service: serviceId })
     }
-  }, [account.id])
+  }, [account.id, serviceId])
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
-
-    let resizeFrame: number | null = null
-    let lastBounds: [number, number, number, number] | null = null
     const syncBounds = () => {
-      if (resizeFrame !== null) return
-      resizeFrame = requestAnimationFrame(() => {
-        resizeFrame = null
-        const rect = container.getBoundingClientRect()
-        const bounds: [number, number, number, number] = [
-          Math.round(rect.left * 100) / 100,
-          Math.round(rect.top * 100) / 100,
-          Math.round(rect.width * 100) / 100,
-          Math.round(rect.height * 100) / 100,
-        ]
-        if (bounds[2] <= 0 || bounds[3] <= 0) return
-        if (lastBounds?.every((value, index) => value === bounds[index])) return
-        lastBounds = bounds
-        void invoke("resize_google_flow", {
-          accountId: account.id,
-          x: bounds[0],
-          y: bounds[1],
-          width: bounds[2],
-          height: bounds[3],
-        })
-      })
+      const rect = container.getBoundingClientRect()
+      void invoke("resize_google_flow", { accountId: account.id, service: serviceId, x: rect.left, y: rect.top, width: rect.width, height: rect.height })
     }
     const onReady = () => syncBounds()
     container.addEventListener("flowpilot-webview-ready", onReady)
@@ -1305,11 +1251,10 @@ function FlowShell({
     observer.observe(container)
     syncBounds()
     return () => {
-      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
       observer.disconnect()
       container.removeEventListener("flowpilot-webview-ready", onReady)
     }
-  }, [account.id])
+  }, [navigatorOpen, fullView, account.id, serviceId])
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && fullView) onToggleFullView()
@@ -1318,14 +1263,14 @@ function FlowShell({
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [fullView, onToggleFullView])
   return (
-    <div className={`flow-shell ${navigatorOpen ? "navigator-open" : ""}`} aria-busy={webviewLoading}>
+    <div className={`flow-shell ${navigatorOpen ? "navigator-open" : ""}`}>
       <div className="flow-bar">
         <button className="back" onClick={onBack}>‹ Accounts</button>
         <span>{status}</span>
         <div className="flow-controls">
           <div className="mini-navigator">
             <button className="navigator-trigger" onClick={onToggleNavigator} aria-expanded={navigatorOpen}>
-              <img src={account.avatarUrl || "/google-flow.png"} alt="" />
+              <img src={account.avatarUrl || service.logo} alt="" />
               <span>{account.name}</span>
               <span aria-hidden="true">▾</span>
             </button>
@@ -1335,10 +1280,9 @@ function FlowShell({
                   <button
                     key={candidate.id}
                     className={candidate.id === account.id ? "selected" : ""}
-                    disabled={webviewLoading}
                     onClick={() => onSelectAccount(candidate)}
                   >
-                    <img src={candidate.avatarUrl || "/google-flow.png"} alt="" />
+                    <img src={candidate.avatarUrl || SERVICES[serviceOf(candidate)].logo} alt="" />
                     <span>{candidate.name}</span>
                   </button>
                 ))}
@@ -1350,7 +1294,7 @@ function FlowShell({
           </button>
         </div>
       </div>
-      <div ref={containerRef} className="webview-host" aria-label="Google Flow WebView" />
+      <div ref={containerRef} className="webview-host" aria-label={`${service.name} WebView`} />
     </div>
   )
 }

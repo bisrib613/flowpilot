@@ -32,6 +32,7 @@ where
 async fn open_google_flow(
     app: tauri::AppHandle,
     account_id: String,
+    service: String,
     x: f64,
     y: f64,
     width: f64,
@@ -39,7 +40,7 @@ async fn open_google_flow(
 ) -> Result<(), String> {
     let operation_app = app.clone();
     run_on_ui_thread(&app, move || {
-        webview_manager::open(&operation_app, account_id, x, y, width, height)
+        webview_manager::open(&operation_app, account_id, service, x, y, width, height)
     })
     .await
 }
@@ -48,10 +49,11 @@ async fn open_google_flow(
 async fn close_google_flow(
     app: tauri::AppHandle,
     account_id: Option<String>,
+    service: Option<String>,
 ) -> Result<(), String> {
     let operation_app = app.clone();
     run_on_ui_thread(&app, move || {
-        webview_manager::close(&operation_app, account_id)
+        webview_manager::close(&operation_app, account_id, service)
     })
     .await
 }
@@ -60,6 +62,7 @@ async fn close_google_flow(
 async fn resize_google_flow(
     app: tauri::AppHandle,
     account_id: String,
+    service: String,
     x: f64,
     y: f64,
     width: f64,
@@ -67,7 +70,7 @@ async fn resize_google_flow(
 ) -> Result<(), String> {
     let operation_app = app.clone();
     run_on_ui_thread(&app, move || {
-        webview_manager::resize(&operation_app, account_id, x, y, width, height)
+        webview_manager::resize(&operation_app, account_id, service, x, y, width, height)
     })
     .await
 }
@@ -76,50 +79,24 @@ async fn resize_google_flow(
 async fn remove_google_flow_account(
     app: tauri::AppHandle,
     account_id: String,
+    service: String,
 ) -> Result<bool, String> {
     let operation_app = app.clone();
-    let cleanup_account_id = account_id.clone();
-    let profile = run_on_ui_thread(&app, move || {
-        webview_manager::remove(&operation_app, account_id)
-    })
-    .await?;
-    let Some(profile) = profile else {
-        return Ok(true);
-    };
-
-    tauri::async_runtime::spawn_blocking(move || {
-        for attempt in 0..3 {
-            match std::fs::remove_dir_all(&profile) {
-                Ok(()) => return true,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
-                Err(error) if attempt < 2 => {
-                    std::thread::sleep(Duration::from_millis(200));
-                    eprintln!(
-                        "[flowpilot-webview] profile cleanup retry account={cleanup_account_id}: {error}"
-                    );
-                }
-                Err(error) => {
-                    eprintln!(
-                        "[flowpilot-webview] profile cleanup pending account={cleanup_account_id}: {error}"
-                    );
-                    return false;
-                }
-            }
-        }
-        false
+    run_on_ui_thread(&app, move || {
+        webview_manager::remove(&operation_app, account_id, service)
     })
     .await
-    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn clear_google_flow_cache(
     app: tauri::AppHandle,
     account_id: String,
+    service: String,
 ) -> Result<(), String> {
     let operation_app = app.clone();
     let receiver = run_on_ui_thread(&app, move || {
-        webview_manager::begin_clear_disk_cache(&operation_app, account_id)
+        webview_manager::begin_clear_disk_cache(&operation_app, account_id, service)
     })
     .await?;
     let Some(receiver) = receiver else {

@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core"
+
 export type StoredAccount = {
   id: string
   name: string
@@ -6,21 +8,27 @@ export type StoredAccount = {
   avatar: string
   favorite: boolean
   order: number
+  service?: "flow" | "dola" | "leonardo" | "chatgpt"
 }
+
 const STORAGE_KEY = "flowpilot-accounts"
+const SERVICES = new Set(["flow", "dola", "leonardo", "chatgpt"])
+
 function isAccount(value: unknown): value is StoredAccount {
   if (!value || typeof value !== "object") return false
-  const a = value as Partial<StoredAccount>
+  const account = value as Partial<StoredAccount>
   return (
-    typeof a.id === "string" &&
-    typeof a.name === "string" &&
-    (a.email === null || typeof a.email === "string") &&
-    (a.avatarUrl === null || typeof a.avatarUrl === "string") &&
-    typeof a.avatar === "string" &&
-    typeof a.favorite === "boolean" &&
-    typeof a.order === "number"
+    typeof account.id === "string" &&
+    typeof account.name === "string" &&
+    (account.email === null || typeof account.email === "string") &&
+    (account.avatarUrl === null || typeof account.avatarUrl === "string") &&
+    typeof account.avatar === "string" &&
+    typeof account.favorite === "boolean" &&
+    typeof account.order === "number" &&
+    (account.service === undefined || SERVICES.has(account.service))
   )
 }
+
 export async function loadAccounts(): Promise<StoredAccount[]> {
   try {
     const native = await invoke<unknown>("load_accounts")
@@ -29,7 +37,6 @@ export async function loadAccounts(): Promise<StoredAccount[]> {
       localStorage.removeItem(STORAGE_KEY)
       return [...native].sort((a, b) => a.order - b.order)
     }
-
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw !== null) {
       const parsed: unknown = JSON.parse(raw)
@@ -44,6 +51,7 @@ export async function loadAccounts(): Promise<StoredAccount[]> {
     return []
   }
 }
+
 export async function saveAccounts(accounts: StoredAccount[]) {
   try {
     if (!accounts.every(isAccount)) throw new Error("Invalid account data")
@@ -53,4 +61,3 @@ export async function saveAccounts(accounts: StoredAccount[]) {
     console.error("Flowpilot account data could not be saved", error)
   }
 }
-import { invoke } from "@tauri-apps/api/core"

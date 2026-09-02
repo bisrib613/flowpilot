@@ -6,7 +6,7 @@ on:
       tag:
         description: Release tag to build
         required: true
-        default: v1.2.2
+        default: v1.3.0
   push:
     branches:
       - main
@@ -39,9 +39,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ inputs.tag || 'v1.2.2' }}
-          releaseName: Flowpilot ${{ inputs.tag || 'v1.2.2' }}
-          releaseBody: Flowpilot Windows installer.
+          tagName: ${{ inputs.tag || 'v1.3.0' }}
+          releaseName: Flowpilot ${{ inputs.tag || 'v1.3.0' }}
+          releaseBody: Multi-service desktop workspace for Flow, Dola, Leonardo AI, and ChatGPT.
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: false

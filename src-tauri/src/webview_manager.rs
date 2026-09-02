@@ -17,9 +17,8 @@ use webview2_com::{
 #[cfg(windows)]
 use windows::core::Interface;
 
-const GOOGLE_FLOW_URL: &str = "https://flow.google";
-const WEBVIEW_LABEL_PREFIX: &str = "google-flow";
-const MAX_CACHED_WEBVIEWS: usize = 5;
+const WEBVIEW_LABEL_PREFIX: &str = "flowpilot-service";
+const MAX_CACHED_WEBVIEWS: usize = 10;
 
 pub struct WebviewManager {
     active_account_id: Mutex<Option<String>>,
@@ -41,8 +40,24 @@ impl Default for WebviewManager {
     }
 }
 
-fn webview_label(account_id: &str) -> String {
-    format!("{WEBVIEW_LABEL_PREFIX}-{account_id}")
+fn service_url(service: &str) -> Result<&'static str, String> {
+    match service {
+        "flow" => Ok("https://labs.google/fx/tools/flow"),
+        "dola" => Ok("https://www.dola.com/"),
+        "leonardo" => Ok("https://app.leonardo.ai/"),
+        "chatgpt" => Ok("https://chatgpt.com/"),
+        _ => Err("invalid service".to_string()),
+    }
+}
+
+fn profile_key(service: &str, account_id: &str) -> Result<String, String> {
+    service_url(service)?;
+    validate_account_id(account_id)?;
+    Ok(format!("{service}-{account_id}"))
+}
+
+fn webview_label(profile_key: &str) -> String {
+    format!("{WEBVIEW_LABEL_PREFIX}-{profile_key}")
 }
 
 fn touch_account(state: &WebviewManager, account_id: &str) -> Result<(), String> {
@@ -71,12 +86,12 @@ fn validate_account_id(account_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn profile_path<R: Runtime>(app: &AppHandle<R>, account_id: &str) -> Result<PathBuf, String> {
+fn profile_path<R: Runtime>(app: &AppHandle<R>, profile_key: &str) -> Result<PathBuf, String> {
     let root = app
         .path()
         .resolve("webview-profiles", BaseDirectory::AppLocalData)
         .map_err(|e| e.to_string())?;
-    let profile = root.join(account_id);
+    let profile = root.join(profile_key);
     if profile.parent() != Some(root.as_path()) {
         return Err("invalid account profile path".to_string());
     }
@@ -97,11 +112,11 @@ fn close_maintenance_webview<R: Runtime>(app: &AppHandle<R>, label: String) {
 #[cfg(windows)]
 fn begin_windows_disk_cache_clear<R: Runtime>(
     app: &AppHandle<R>,
-    account_id: &str,
+    profile_key: &str,
     profile: PathBuf,
 ) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, String> {
-    let regular_label = webview_label(account_id);
-    let maintenance_label = format!("flowpilot-cache-maintenance-{account_id}");
+    let regular_label = webview_label(profile_key);
+    let maintenance_label = format!("flowpilot-cache-maintenance-{profile_key}");
     let (target, temporary) = if let Some(webview) = app.get_webview(&regular_label) {
         (webview, false)
     } else if let Some(webview) = app.get_webview(&maintenance_label) {
@@ -190,9 +205,10 @@ fn begin_windows_disk_cache_clear<R: Runtime>(
 pub fn begin_clear_disk_cache<R: Runtime>(
     app: &AppHandle<R>,
     account_id: String,
+    service: String,
 ) -> Result<Option<std::sync::mpsc::Receiver<Result<(), String>>>, String> {
-    validate_account_id(&account_id)?;
-    let profile = profile_path(app, &account_id)?;
+    let key = profile_key(&service, &account_id)?;
+    let profile = profile_path(app, &key)?;
     if !profile.exists() {
         return Ok(None);
     }
@@ -204,7 +220,7 @@ pub fn begin_clear_disk_cache<R: Runtime>(
             .operation
             .lock()
             .map_err(|_| "webview state unavailable")?;
-        begin_windows_disk_cache_clear(app, &account_id, profile).map(Some)
+        begin_windows_disk_cache_clear(app, &key, profile).map(Some)
     }
     #[cfg(not(windows))]
     {
@@ -228,6 +244,7 @@ fn validate_bounds(x: f64, y: f64, width: f64, height: f64) -> Result<(), String
 pub fn open<R: Runtime>(
     app: &AppHandle<R>,
     account_id: String,
+    service: String,
     x: f64,
     y: f64,
     width: f64,
@@ -238,20 +255,20 @@ pub fn open<R: Runtime>(
         .operation
         .lock()
         .map_err(|_| "webview state unavailable")?;
-    validate_account_id(&account_id)?;
+    let key = profile_key(&service, &account_id)?;
     validate_bounds(x, y, width, height)?;
     let window = app
         .get_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
 
-    let requested_label = webview_label(&account_id);
+    let requested_label = webview_label(&key);
     let active_account = state
         .active_account_id
         .lock()
         .map_err(|_| "webview state unavailable")?
         .clone();
     if let Some(active_id) = active_account.as_deref() {
-        if active_id != account_id {
+        if active_id != key {
             if let Some(webview) = app.get_webview(&webview_label(active_id)) {
                 webview.hide().map_err(|e| e.to_string())?;
             }
@@ -269,12 +286,12 @@ pub fn open<R: Runtime>(
         *state
             .active_account_id
             .lock()
-            .map_err(|_| "webview state unavailable")? = Some(account_id.clone());
+            .map_err(|_| "webview state unavailable")? = Some(key.clone());
         *state
             .visible
             .lock()
             .map_err(|_| "webview state unavailable")? = true;
-        touch_account(&state, &account_id)?;
+        touch_account(&state, &key)?;
         return Ok(());
     }
 
@@ -303,11 +320,11 @@ pub fn open<R: Runtime>(
         }
     }
 
-    let profile = profile_path(app, &account_id)?;
+    let profile = profile_path(app, &key)?;
     let url = WebviewUrl::External(
-        GOOGLE_FLOW_URL
+        service_url(&service)?
             .parse()
-            .map_err(|_| "invalid Google Flow URL")?,
+        .map_err(|_| "invalid service URL")?,
     );
     let builder = WebviewBuilder::new(requested_label.clone(), url)
         .data_directory(profile)
@@ -337,17 +354,17 @@ pub fn open<R: Runtime>(
     *state
         .active_account_id
         .lock()
-        .map_err(|_| "webview state unavailable")? = Some(account_id.clone());
+        .map_err(|_| "webview state unavailable")? = Some(key.clone());
     *state
         .visible
         .lock()
         .map_err(|_| "webview state unavailable")? = true;
-    touch_account(&state, &account_id)?;
+    touch_account(&state, &key)?;
     drop(operation);
     Ok(())
 }
 
-pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>) -> Result<(), String> {
+pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>, service: Option<String>) -> Result<(), String> {
     let state = app.state::<WebviewManager>();
     let operation = state
         .operation
@@ -359,19 +376,23 @@ pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>) -> Resu
         .map_err(|_| "webview state unavailable")?
         .clone();
     if let Some(active_id) = active_account {
+        let requested_key = match (account_id.as_deref(), service.as_deref()) {
+            (Some(id), Some(service)) => Some(profile_key(service, id)?),
+            _ => None,
+        };
         if account_id
             .as_deref()
-            .map_or(true, |requested_id| requested_id == active_id)
+            .map_or(true, |_| requested_key.as_deref() == Some(active_id.as_str()))
         {
             if let Some(webview) = app.get_webview(&webview_label(&active_id)) {
                 webview.hide().map_err(|e| e.to_string())?;
             }
-            *state
-                .visible
-                .lock()
-                .map_err(|_| "webview state unavailable")? = false;
         }
     }
+    *state
+        .visible
+        .lock()
+        .map_err(|_| "webview state unavailable")? = false;
     drop(operation);
     Ok(())
 }
@@ -379,22 +400,24 @@ pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>) -> Resu
 pub fn resize<R: Runtime>(
     app: &AppHandle<R>,
     account_id: String,
+    service: String,
     x: f64,
     y: f64,
     width: f64,
     height: f64,
 ) -> Result<(), String> {
     validate_bounds(x, y, width, height)?;
+    let key = profile_key(&service, &account_id)?;
     let state = app.state::<WebviewManager>();
     let active_account = state
         .active_account_id
         .lock()
         .map_err(|_| "webview state unavailable")?
         .clone();
-    if active_account.as_deref() != Some(account_id.as_str()) {
+    if active_account.as_deref() != Some(key.as_str()) {
         return Ok(());
     }
-    if let Some(webview) = app.get_webview(&webview_label(&account_id)) {
+    if let Some(webview) = app.get_webview(&webview_label(&key)) {
         webview
             .set_position(tauri::LogicalPosition::new(x, y))
             .map_err(|e| e.to_string())?;
@@ -405,14 +428,14 @@ pub fn resize<R: Runtime>(
     Ok(())
 }
 
-pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<Option<PathBuf>, String> {
-    validate_account_id(&account_id)?;
+pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: String) -> Result<bool, String> {
+    let key = profile_key(&service, &account_id)?;
     let state = app.state::<WebviewManager>();
     let _operation = state
         .operation
         .lock()
         .map_err(|_| "webview state unavailable")?;
-    let label = webview_label(&account_id);
+    let label = webview_label(&key);
 
     crate::webview_download_bridge::cancel_for_webview(
         &app.state::<crate::webview_download_bridge::DownloadState>(),
@@ -426,14 +449,14 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<Opti
             .cached_accounts
             .lock()
             .map_err(|_| "webview state unavailable")?;
-        cached.remove(&account_id);
+        cached.remove(&key);
     }
     {
         let mut active = state
             .active_account_id
             .lock()
             .map_err(|_| "webview state unavailable")?;
-        if active.as_deref() == Some(account_id.as_str()) {
+        if active.as_deref() == Some(key.as_str()) {
             *active = None;
             *state
                 .visible
@@ -442,10 +465,15 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<Opti
         }
     }
 
-    let profile = profile_path(app, &account_id)?;
-    if profile.exists() {
-        Ok(Some(profile))
-    } else {
-        Ok(None)
+    let profile = profile_path(app, &key)?;
+    if !profile.exists() {
+        return Ok(true);
+    }
+    match std::fs::remove_dir_all(&profile) {
+        Ok(()) => Ok(true),
+        Err(error) => {
+            eprintln!("[flowpilot-webview] profile cleanup pending account={account_id}: {error}");
+            Ok(false)
+        }
     }
 }
