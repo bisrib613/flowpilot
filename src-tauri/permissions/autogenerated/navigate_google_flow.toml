@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-navigate-google-flow"
+description = "Enables the navigate_google_flow command without any pre-configured scope."
+commands.allow = ["navigate_google_flow"]
+
+[[permission]]
+identifier = "deny-navigate-google-flow"
+description = "Denies the navigate_google_flow command without any pre-configured scope."
+commands.deny = ["navigate_google_flow"]

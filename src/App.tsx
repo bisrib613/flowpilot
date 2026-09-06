@@ -8,7 +8,12 @@ import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
 import { loadAccounts, saveAccounts } from "./services/account-store"
 
-type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt"
+type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt" | "migoo"
+type FlowBookmark = {
+  id: string
+  name: string
+  url: string
+}
 type Account = {
   id: string
   name: string
@@ -24,8 +29,45 @@ const SERVICES: Record<ServiceId, { name: string; shortName: string; logo: strin
   dola: { name: "Dola", shortName: "Dola", logo: "/dola-logo.png", url: "https://www.dola.com/" },
   leonardo: { name: "Leonardo AI", shortName: "Leonardo", logo: "/leonardo-logo.png", url: "https://app.leonardo.ai/" },
   chatgpt: { name: "ChatGPT", shortName: "ChatGPT", logo: "/chatgpt-logo.png", url: "https://chatgpt.com/" },
+  migoo: { name: "Migoo", shortName: "Migoo", logo: "https://migoo.ai/favicon.ico", url: "https://migoo.ai/home" },
 }
 const serviceOf = (account: Account): ServiceId => account.service || "flow"
+const FLOW_BOOKMARKS_KEY = "flowpilot-flow-bookmarks"
+const isFlowUrl = (value: string) => {
+  try {
+    const url = new URL(value)
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "labs.google" &&
+      (url.pathname === "/fx/tools/flow" || url.pathname.startsWith("/fx/tools/flow/")) &&
+      !url.username &&
+      !url.password
+    )
+  } catch {
+    return false
+  }
+}
+const loadFlowBookmarks = (): FlowBookmark[] => {
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(FLOW_BOOKMARKS_KEY) || "[]")
+    if (!Array.isArray(stored)) return []
+    return stored.filter((item): item is FlowBookmark => {
+      if (!item || typeof item !== "object") return false
+      const bookmark = item as Partial<FlowBookmark>
+      return (
+        typeof bookmark.id === "string" &&
+        typeof bookmark.name === "string" &&
+        bookmark.name.trim().length > 0 &&
+        bookmark.name.length <= 50 &&
+        typeof bookmark.url === "string" &&
+        bookmark.url.length <= 2048 &&
+        isFlowUrl(bookmark.url)
+      )
+    })
+  } catch {
+    return []
+  }
+}
 const LICENSE_PURCHASE_URL = "https://tokotelegram.com/toko/flowpilot"
 const TELEGRAM_CHANNEL_URL = ""
 const APP_VERSION = packageJson.version
@@ -94,6 +136,7 @@ export default function App() {
   const [deviceId, setDeviceId] = useState("")
   const [key, setKey] = useState("")
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [flowBookmarks, setFlowBookmarks] = useState<FlowBookmark[]>(loadFlowBookmarks)
   const [activeService, setActiveService] = useState<ServiceId>("flow")
   const [accountsLoaded, setAccountsLoaded] = useState(false)
   const [profile, setProfile] = useState<{
@@ -255,6 +298,13 @@ export default function App() {
   useEffect(() => {
     if (licensed && accountsLoaded) void saveAccounts(accounts)
   }, [accounts, licensed, accountsLoaded])
+  useEffect(() => {
+    try {
+      localStorage.setItem(FLOW_BOOKMARKS_KEY, JSON.stringify(flowBookmarks))
+    } catch (error) {
+      console.error("Flow bookmarks could not be saved", error)
+    }
+  }, [flowBookmarks])
   useEffect(() => {
     const activeStillExists = active !== null && accounts.some((account) => account.id === active.id)
     if (view === "flow" && !activeStillExists) {
@@ -442,6 +492,7 @@ export default function App() {
           <FlowShell
             account={active}
             accounts={serviceAccounts}
+            bookmarks={flowBookmarks}
             fullView={fullView}
             navigatorOpen={navigatorOpen}
             onToggleFullView={() => {
@@ -452,6 +503,26 @@ export default function App() {
             onSelectAccount={(account) => {
               setNavigatorOpen(false)
               if (account.id !== active.id) setActive(account)
+            }}
+            onAddBookmark={(name, url) => {
+              const cleanName = name.trim()
+              const cleanUrl = url.trim()
+              if (!cleanName) return "Enter a bookmark name."
+              if (cleanName.length > 50) return "Bookmark name must be 50 characters or fewer."
+              if (cleanUrl.length > 2048 || !isFlowUrl(cleanUrl)) {
+                return "Enter a valid Google Flow URL starting with https://labs.google/fx/tools/flow."
+              }
+              if (flowBookmarks.some((bookmark) => bookmark.url === cleanUrl)) {
+                return "That Google Flow URL is already bookmarked."
+              }
+              setFlowBookmarks((current) => [
+                ...current,
+                { id: crypto.randomUUID(), name: cleanName, url: cleanUrl },
+              ])
+              return null
+            }}
+            onDeleteBookmark={(id) => {
+              setFlowBookmarks((current) => current.filter((bookmark) => bookmark.id !== id))
             }}
             onBack={() => {
               void invoke("close_google_flow", { accountId: active.id, service: serviceOf(active) })
@@ -1184,7 +1255,7 @@ function Settings({
           <h2>
             Flowpilot <span className="muted">{APP_VERSION}</span>
           </h2>
-          <p>Google Flow desktop workspace and multi-account manager.</p>
+          <p>Multi-service desktop workspace and account manager.</p>
         </div>
       </section>
     </div>
@@ -1193,27 +1264,41 @@ function Settings({
 function FlowShell({
   account,
   accounts,
+  bookmarks,
   fullView,
   navigatorOpen,
   onToggleFullView,
   onToggleNavigator,
   onSelectAccount,
+  onAddBookmark,
+  onDeleteBookmark,
   onBack,
 }: {
   account: Account
   accounts: Account[]
+  bookmarks: FlowBookmark[]
   fullView: boolean
   navigatorOpen: boolean
   onToggleFullView: () => void
   onToggleNavigator: () => void
   onSelectAccount: (account: Account) => void
+  onAddBookmark: (name: string, url: string) => string | null
+  onDeleteBookmark: (id: string) => void
   onBack: () => void
 }) {
   const serviceId = serviceOf(account)
   const service = SERVICES[serviceId]
   const [status, setStatus] = useState(`Loading ${service.name}...`)
+  const [bookmarkManagerOpen, setBookmarkManagerOpen] = useState(false)
+  const [bookmarkName, setBookmarkName] = useState("")
+  const [bookmarkUrl, setBookmarkUrl] = useState("")
+  const [bookmarkError, setBookmarkError] = useState("")
   const containerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
+    setBookmarkManagerOpen(false)
+    setBookmarkName("")
+    setBookmarkUrl("")
+    setBookmarkError("")
     let cancelled = false
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
@@ -1255,15 +1340,75 @@ function FlowShell({
       container.removeEventListener("flowpilot-webview-ready", onReady)
     }
   }, [navigatorOpen, fullView, account.id, serviceId])
+  const showWebview = async () => {
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    setBookmarkManagerOpen(false)
+    setStatus(`Loading ${service.name}...`)
+    try {
+      await invoke("open_google_flow", {
+        accountId: account.id,
+        service: serviceId,
+        x: rect.left,
+        y: rect.top,
+        width: rect.width,
+        height: rect.height,
+      })
+      setStatus(`${service.name} ready`)
+    } catch (error) {
+      console.error(`${service.name} WebView failed`, error)
+      setStatus(`Unable to open ${service.name}. Please try again.`)
+    }
+  }
+  const navigateFlow = async (url: string, name: string) => {
+    if (serviceId !== "flow") return
+    try {
+      if (navigatorOpen) onToggleNavigator()
+      if (bookmarkManagerOpen) await showWebview()
+      setStatus(`Opening ${name}...`)
+      await invoke("navigate_google_flow", { accountId: account.id, url })
+      setStatus(`${name} ready`)
+    } catch (error) {
+      console.error("Google Flow bookmark failed", error)
+      setStatus(`Unable to open ${name}. Please check the bookmark URL.`)
+    }
+  }
+  const openBookmarkManager = async () => {
+    try {
+      if (navigatorOpen) onToggleNavigator()
+      await invoke("close_google_flow", { accountId: account.id, service: serviceId })
+      setBookmarkManagerOpen(true)
+      setBookmarkError("")
+      setStatus("Manage Flow bookmarks")
+    } catch (error) {
+      console.error("Unable to open bookmark manager", error)
+      setStatus("Unable to open bookmark manager. Please try again.")
+    }
+  }
+  const submitBookmark = () => {
+    const error = onAddBookmark(bookmarkName, bookmarkUrl)
+    if (error) {
+      setBookmarkError(error)
+      return
+    }
+    setBookmarkName("")
+    setBookmarkUrl("")
+    setBookmarkError("")
+  }
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && fullView) onToggleFullView()
+      if (event.key !== "Escape") return
+      if (bookmarkManagerOpen) {
+        void showWebview()
+      } else if (fullView) {
+        onToggleFullView()
+      }
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [fullView, onToggleFullView])
+  }, [bookmarkManagerOpen, fullView, onToggleFullView])
   return (
-    <div className={`flow-shell ${navigatorOpen ? "navigator-open" : ""}`}>
+    <div className={`flow-shell ${navigatorOpen ? "navigator-open" : ""} ${serviceId === "flow" ? "has-bookmarks" : ""}`}>
       <div className="flow-bar">
         <button className="back" onClick={onBack}>‹ Accounts</button>
         <span>{status}</span>
@@ -1294,7 +1439,71 @@ function FlowShell({
           </button>
         </div>
       </div>
-      <div ref={containerRef} className="webview-host" aria-label={`${service.name} WebView`} />
+      {serviceId === "flow" && (
+        <nav className="flow-bookmark-bar" aria-label="Google Flow bookmarks">
+          <button type="button" className="flow-bookmark flow-bookmark-home" onClick={() => void navigateFlow(service.url, "Flow")}>
+            <img src={service.logo} alt="" />
+            <span>Flow</span>
+          </button>
+          {bookmarks.map((bookmark) => (
+            <button
+              type="button"
+              className="flow-bookmark"
+              key={bookmark.id}
+              title={bookmark.url}
+              onClick={() => void navigateFlow(bookmark.url, bookmark.name)}
+            >
+              {bookmark.name}
+            </button>
+          ))}
+          <button type="button" className="flow-bookmark-add" onClick={() => void openBookmarkManager()}>
+            + Bookmark
+          </button>
+        </nav>
+      )}
+      <div ref={containerRef} className="webview-host" aria-label={`${service.name} WebView`}>
+        {bookmarkManagerOpen && serviceId === "flow" && (
+          <section className="bookmark-manager" aria-labelledby="bookmark-manager-title">
+            <div className="bookmark-manager-heading">
+              <div>
+                <h2 id="bookmark-manager-title">Flow bookmarks</h2>
+                <p>Add shortcuts for private tools hosted inside Google Flow.</p>
+              </div>
+              <button type="button" className="bookmark-close" onClick={() => void showWebview()} aria-label="Close bookmark manager">×</button>
+            </div>
+            <div className="bookmark-form">
+              <label>
+                <span>Name</span>
+                <input value={bookmarkName} maxLength={50} onChange={(event) => setBookmarkName(event.target.value)} placeholder="Tool name" />
+              </label>
+              <label>
+                <span>Google Flow URL</span>
+                <input
+                  value={bookmarkUrl}
+                  onChange={(event) => setBookmarkUrl(event.target.value)}
+                  onKeyDown={(event) => event.key === "Enter" && submitBookmark()}
+                  placeholder="https://labs.google/fx/tools/flow/..."
+                />
+              </label>
+              <button type="button" className="primary" onClick={submitBookmark}>Add bookmark</button>
+            </div>
+            {bookmarkError && <p className="bookmark-error" role="alert">{bookmarkError}</p>}
+            <div className="bookmark-list">
+              {bookmarks.length === 0 ? (
+                <p className="bookmark-empty">No private tools saved. Add your first Google Flow URL above.</p>
+              ) : bookmarks.map((bookmark) => (
+                <div className="bookmark-row" key={bookmark.id}>
+                  <div>
+                    <strong>{bookmark.name}</strong>
+                    <span>{bookmark.url}</span>
+                  </div>
+                  <button type="button" onClick={() => onDeleteBookmark(bookmark.id)}>Remove</button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
     </div>
   )
 }

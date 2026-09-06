@@ -41,7 +41,7 @@ jobs:
         with:
           tagName: ${{ inputs.tag || 'v1.3.0' }}
           releaseName: Flowpilot ${{ inputs.tag || 'v1.3.0' }}
-          releaseBody: Multi-service desktop workspace for Flow, Dola, Leonardo AI, and ChatGPT.
+          releaseBody: Multi-service desktop workspace for Flow, Dola, Leonardo AI, ChatGPT, and Migoo.
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: false

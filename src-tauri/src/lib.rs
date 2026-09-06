@@ -76,6 +76,19 @@ async fn resize_google_flow(
 }
 
 #[tauri::command]
+async fn navigate_google_flow(
+    app: tauri::AppHandle,
+    account_id: String,
+    url: String,
+) -> Result<(), String> {
+    let operation_app = app.clone();
+    run_on_ui_thread(&app, move || {
+        webview_manager::navigate_flow_bookmark(&operation_app, account_id, url)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn remove_google_flow_account(
     app: tauri::AppHandle,
     account_id: String,
@@ -159,6 +172,7 @@ pub fn run() {
             open_google_flow,
             close_google_flow,
             resize_google_flow,
+            navigate_google_flow,
             remove_google_flow_account,
             clear_google_flow_cache,
             webview_download_bridge::begin_blob_download,

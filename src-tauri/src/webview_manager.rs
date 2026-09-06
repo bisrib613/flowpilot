@@ -46,6 +46,7 @@ fn service_url(service: &str) -> Result<&'static str, String> {
         "dola" => Ok("https://www.dola.com/"),
         "leonardo" => Ok("https://app.leonardo.ai/"),
         "chatgpt" => Ok("https://chatgpt.com/"),
+        "migoo" => Ok("https://migoo.ai/home"),
         _ => Err("invalid service".to_string()),
     }
 }
@@ -277,6 +278,13 @@ pub fn open<R: Runtime>(
 
     if let Some(webview) = app.get_webview(&requested_label) {
         webview
+            .navigate(
+                service_url(&service)?
+                    .parse()
+                    .map_err(|_| "invalid service URL")?,
+            )
+            .map_err(|e| e.to_string())?;
+        webview
             .set_position(tauri::LogicalPosition::new(x, y))
             .map_err(|e| e.to_string())?;
         webview
@@ -362,6 +370,45 @@ pub fn open<R: Runtime>(
     touch_account(&state, &key)?;
     drop(operation);
     Ok(())
+}
+
+pub fn navigate_flow_bookmark<R: Runtime>(
+    app: &AppHandle<R>,
+    account_id: String,
+    url: String,
+) -> Result<(), String> {
+    let parsed: tauri::Url = url
+        .parse()
+        .map_err(|_| "invalid Google Flow bookmark URL".to_string())?;
+    if parsed.scheme() != "https"
+        || parsed.host_str() != Some("labs.google")
+        || !(parsed.path() == "/fx/tools/flow"
+            || parsed.path().starts_with("/fx/tools/flow/"))
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err("unsupported Google Flow bookmark URL".to_string());
+    }
+
+    let key = profile_key("flow", &account_id)?;
+    let state = app.state::<WebviewManager>();
+    let _operation = state
+        .operation
+        .lock()
+        .map_err(|_| "webview state unavailable")?;
+    let active_account = state
+        .active_account_id
+        .lock()
+        .map_err(|_| "webview state unavailable")?
+        .clone();
+    if active_account.as_deref() != Some(key.as_str()) {
+        return Err("Google Flow account is not active".to_string());
+    }
+    let webview = app
+        .get_webview(&webview_label(&key))
+        .ok_or_else(|| "Google Flow WebView is not open".to_string())?;
+    webview.navigate(parsed).map_err(|e| e.to_string())?;
+    touch_account(&state, &key)
 }
 
 pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>, service: Option<String>) -> Result<(), String> {
