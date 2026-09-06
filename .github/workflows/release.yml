@@ -4,19 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to build
+        description: Release tag to build (for example v1.4.0)
         required: true
-        default: v1.3.0
-  push:
-    branches:
-      - main
+        default: v1.4.0
 
 permissions:
   contents: write
 
 jobs:
   release:
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]')
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -34,14 +30,42 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Set release version
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          $tag = $env:RELEASE_TAG.Trim()
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Release tag must use the vMAJOR.MINOR.PATCH format, for example v1.4.0."
+          }
+
+          $version = $tag.Substring(1)
+          npm version $version --no-git-tag-version
+
+          $tauriConfigPath = "src-tauri/tauri.conf.json"
+          $tauriConfig = Get-Content $tauriConfigPath -Raw | ConvertFrom-Json
+          $tauriConfig.version = $version
+          $tauriConfig | ConvertTo-Json -Depth 100 | Set-Content $tauriConfigPath -Encoding utf8NoBOM
+
+          $cargoPath = "src-tauri/Cargo.toml"
+          $cargo = Get-Content $cargoPath -Raw
+          $cargo = [regex]::Replace($cargo, '(?m)^version = "[^"]+"', "version = `"$version`"", 1)
+          $resolvedCargoPath = (Resolve-Path $cargoPath).Path
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($resolvedCargoPath, $cargo, $utf8NoBom)
+
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v0.6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ inputs.tag || 'v1.3.0' }}
-          releaseName: Flowpilot ${{ inputs.tag || 'v1.3.0' }}
-          releaseBody: Multi-service desktop workspace for Flow, Dola, Leonardo AI, ChatGPT, and Migoo.
+          tagName: ${{ inputs.tag }}
+          releaseName: Flowpilot ${{ inputs.tag }}
+          releaseBody: |
+            Added Google Flow bookmarks for private Flow tools.
+            Added Migoo as the fifth supported workspace.
+            Flow, Dola, Leonardo AI, ChatGPT, and Migoo keep isolated account profiles.
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: false
