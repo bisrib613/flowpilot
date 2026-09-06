@@ -29,7 +29,7 @@ const SERVICES: Record<ServiceId, { name: string; shortName: string; logo: strin
   dola: { name: "Dola", shortName: "Dola", logo: "/dola-logo.png", url: "https://www.dola.com/" },
   leonardo: { name: "Leonardo AI", shortName: "Leonardo", logo: "/leonardo-logo.png", url: "https://app.leonardo.ai/" },
   chatgpt: { name: "ChatGPT", shortName: "ChatGPT", logo: "/chatgpt-logo.png", url: "https://chatgpt.com/" },
-  migoo: { name: "Migoo", shortName: "Migoo", logo: "https://migoo.ai/favicon.ico", url: "https://migoo.ai/home" },
+  migoo: { name: "Migoo", shortName: "Migoo", logo: "/migoo-logo.png", url: "https://migoo.ai/home" },
 }
 const serviceOf = (account: Account): ServiceId => account.service || "flow"
 const FLOW_BOOKMARKS_KEY = "flowpilot-flow-bookmarks"
@@ -1456,8 +1456,14 @@ function FlowShell({
               {bookmark.name}
             </button>
           ))}
-          <button type="button" className="flow-bookmark-add" onClick={() => void openBookmarkManager()}>
-            + Bookmark
+          <button
+            type="button"
+            className="flow-bookmark-add"
+            title="Manage Flow bookmarks"
+            aria-label="Manage Flow bookmarks"
+            onClick={() => void openBookmarkManager()}
+          >
+            +
           </button>
         </nav>
       )}

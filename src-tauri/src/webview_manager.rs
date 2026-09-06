@@ -278,13 +278,6 @@ pub fn open<R: Runtime>(
 
     if let Some(webview) = app.get_webview(&requested_label) {
         webview
-            .navigate(
-                service_url(&service)?
-                    .parse()
-                    .map_err(|_| "invalid service URL")?,
-            )
-            .map_err(|e| e.to_string())?;
-        webview
             .set_position(tauri::LogicalPosition::new(x, y))
             .map_err(|e| e.to_string())?;
         webview
