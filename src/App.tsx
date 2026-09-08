@@ -22,6 +22,7 @@ type Account = {
   favorite: boolean
   order: number
   service?: ServiceId
+  flowSessionId?: string
 }
 const SERVICES: Record<ServiceId, { name: string; shortName: string; logo: string; url: string }> = {
   flow: { name: "Google Flow", shortName: "Flow", logo: "/flow-logo.png", url: "https://labs.google/fx/tools/flow" },
@@ -171,6 +172,8 @@ export default function App() {
   const [clearingAllCaches, setClearingAllCaches] = useState(false)
   const [addAccountOpen, setAddAccountOpen] = useState(false)
   const [newAccountName, setNewAccountName] = useState("")
+  const [flowSessionId, setFlowSessionId] = useState("")
+  const [accountNameEdited, setAccountNameEdited] = useState(false)
   const [renamingAccount, setRenamingAccount] = useState<Account | null>(null)
   const [addAccountError, setAddAccountError] = useState("")
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -203,6 +206,11 @@ export default function App() {
         accountId: removing.id,
         service: serviceOf(removing),
       })
+      if (!profileCleaned) {
+        setCacheNotice("The session folder is still in use. Close sign-in windows, restart Flowpilot, then delete the profile again.")
+        setDialog(null)
+        return
+      }
       setAccounts((current) => current.filter((account) => account.id !== removing.id))
       if (active?.id === removing.id) {
         setActive(null)
@@ -210,7 +218,6 @@ export default function App() {
         setNavigatorOpen(false)
         setView("accounts")
       }
-      if (!profileCleaned) console.warn("Account removed; profile cleanup is pending")
       setDialog(null)
     } catch (error) {
       console.error("Unable to remove account", error)
@@ -261,6 +268,8 @@ export default function App() {
   }
   const handleAddAccount = () => {
     setRenamingAccount(null)
+    setFlowSessionId("")
+    setAccountNameEdited(false)
     setNewAccountName("")
     setAddAccountError("")
     setAddAccountOpen(true)
@@ -281,6 +290,15 @@ export default function App() {
       setRenamingAccount(null)
       return
     }
+    const source = flowSessionId ? accounts.find((account) => account.id === flowSessionId && serviceOf(account) === "flow") : undefined
+    if (flowSessionId && !source) {
+      setAddAccountError("The selected Flow profile is no longer available. Select another profile or normal login.")
+      return
+    }
+    if (source && accounts.some((account) => serviceOf(account) === activeService && account.flowSessionId === source.id)) {
+      setAddAccountError("This service already has a profile using that Flow session. Open the existing profile or select another session.")
+      return
+    }
     const a: Account = {
       id: crypto.randomUUID(),
       name,
@@ -290,6 +308,7 @@ export default function App() {
       favorite: false,
       order: accounts.length,
       service: activeService,
+      ...(source && activeService !== "flow" ? { flowSessionId: source.id } : {}),
     }
     setAccounts([...accounts, a])
     setAddAccountOpen(false)
@@ -475,7 +494,7 @@ export default function App() {
     const previousFocus = document.activeElement as HTMLElement | null
     const trapFocus = (event: KeyboardEvent) => {
       if (event.key !== "Tab") return
-      const controls = document.querySelectorAll<HTMLElement>('.dialog button:not(:disabled), .dialog input:not(:disabled)')
+      const controls = document.querySelectorAll<HTMLElement>('.dialog button:not(:disabled), .dialog input:not(:disabled), .dialog select:not(:disabled)')
       const first = controls[0]
       const last = controls[controls.length - 1]
       if (event.shiftKey && document.activeElement === first) {
@@ -734,6 +753,9 @@ export default function App() {
               <p>
                 This deletes this local profile, including its cookies and saved login. It does not delete your account with the service.
               </p>
+              {accounts.some((a) => a.id !== dialog.id && (a.flowSessionId || (serviceOf(a) === "flow" ? a.id : null)) === (dialog.flowSessionId || (serviceOf(dialog) === "flow" ? dialog.id : ""))) && (
+                <p className="dialog-error">This session is also used by {accounts.filter((a) => a.id !== dialog.id && (a.flowSessionId || (serviceOf(a) === "flow" ? a.id : null)) === (dialog.flowSessionId || (serviceOf(dialog) === "flow" ? dialog.id : ""))).map((a) => `${SERVICES[serviceOf(a)].shortName}: ${a.name}`).join(", ")}. Deleting it clears their local logins too.</p>
+              )}
               <div className="dialog-actions">
                 <button autoFocus className="secondary" onClick={() => setDialog(null)}>
                   Cancel
@@ -753,12 +775,28 @@ export default function App() {
             <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="add-account-title">
               <h2 id="add-account-title">{renamingAccount ? "Rename account" : "Add account"}</h2>
               <p>{renamingAccount ? "Choose a name you can recognize in your account list." : `Create a profile for ${SERVICES[activeService].name}. You can sign in after opening it.`}</p>
+              {!renamingAccount && activeService !== "flow" && accounts.some((a) => serviceOf(a) === "flow") && (
+                <>
+                  <label className="field-label" htmlFor="flow-session">Session (optional)</label>
+                  <select id="flow-session" className="session-select" value={flowSessionId} onChange={(event) => {
+                    const id = event.target.value
+                    setFlowSessionId(id)
+                    setAddAccountError("")
+                    if (!accountNameEdited) setNewAccountName(accounts.find((a) => a.id === id)?.name || "")
+                  }}>
+                    <option value="">Normal login · Separate profile</option>
+                    {accounts.filter((a) => serviceOf(a) === "flow").map((a) => <option key={a.id} value={a.id}>Use Flow session: {a.name}</option>)}
+                  </select>
+                  {flowSessionId && <p className="session-note">Open the account, then choose Continue with Google. This shares the selected Flow profile's sessions; deleting either profile clears the shared local logins.</p>}
+                </>
+              )}
               <label className="field-label" htmlFor="account-name">Profile name</label>
               <input
                 id="account-name"
                 autoFocus
                 value={newAccountName}
                 onChange={(event) => {
+                  setAccountNameEdited(true)
                   setNewAccountName(event.target.value)
                   setAddAccountError("")
                 }}
