@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
+import { neighborIndices, shortcutBounds, readPreloadSides } from "./services/workspace-policy"
 import { loadAccounts, saveAccounts } from "./services/account-store"
 
 type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt" | "migoo"
@@ -137,6 +138,8 @@ export default function App() {
   const [key, setKey] = useState("")
   const [accounts, setAccounts] = useState<Account[]>([])
   const [flowBookmarks, setFlowBookmarks] = useState<FlowBookmark[]>(loadFlowBookmarks)
+  const [preloadSides, setPreloadSides] = useState(readPreloadSides)
+  const [settingsTab, setSettingsTab] = useState("general")
   const [activeService, setActiveService] = useState<ServiceId>("flow")
   const [accountsLoaded, setAccountsLoaded] = useState(false)
   const [profile, setProfile] = useState<{
@@ -345,18 +348,18 @@ export default function App() {
     }
   }, [active, accounts, view, fullView, navigatorOpen])
   const serviceAccounts = useMemo(
-    () => accounts.filter((account) => serviceOf(account) === activeService),
+    () => accounts.filter((account) => serviceOf(account) === activeService).sort((a, b) => a.order - b.order),
     [accounts, activeService]
   )
-  const favoriteCount = serviceAccounts.filter((a) => a.favorite).length
+  const favoriteCount = accounts.filter((a) => a.favorite).length
   const visible = useMemo(
     () =>
-      serviceAccounts.filter(
+      (view === "favorites" ? accounts : serviceAccounts).filter(
         (a) =>
           (view !== "favorites" || a.favorite) &&
           `${a.name} ${a.email}`.toLowerCase().includes(query.toLowerCase())
       ),
-    [serviceAccounts, query, view]
+    [accounts, serviceAccounts, query, view]
   )
   const displayed = useMemo(() => {
     if (!dragPreviewIds || view !== "accounts") return visible
@@ -554,10 +557,12 @@ export default function App() {
   if (view === "flow" && active)
     return (
       <div className={`app ${fullView ? "full" : ""}`}>
-        {!fullView && <Sidebar view="flow" setView={setView} profile={profile} licenseState={licenseState} />}
+        {!fullView && <Sidebar view="flow" setView={setView} profile={profile} licenseState={licenseState} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />}
         <main className="content flow-content">
           <FlowShell
             account={active}
+            preloadSides={preloadSides}
+            onClosed={() => { setActive(null); setFullView(false); setView("accounts") }}
             accounts={serviceAccounts}
             bookmarks={flowBookmarks}
             fullView={fullView}
@@ -603,7 +608,7 @@ export default function App() {
     )
   return (
     <div className="app">
-      <Sidebar view={view} setView={setView} profile={profile} licenseState={licenseState} />
+      <Sidebar view={view} setView={setView} profile={profile} licenseState={licenseState} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />
       <main className={`content ${view === "accounts" || view === "favorites" ? "accounts-page" : ""}`}>
         <header>
           <div>
@@ -626,13 +631,13 @@ export default function App() {
                 ? "Updates"
                 : view === "info"
                 ? "How to Use Flowpilot"
-                : "Accounts"}
+                : SERVICES[activeService].name}
             </h1>
             <p>
               {view === "settings"
                 ? "Keep Flowpilot personal, private, and ready to use."
                 : view === "favorites"
-                ? `Your favorite ${SERVICES[activeService].name} accounts in one place.`
+                ? "Your favorite accounts across all services."
                 : view === "license"
                 ? "Choose the Flowpilot license that fits your needs."
                 : view === "updates"
@@ -651,7 +656,7 @@ export default function App() {
               <div className="account-count">{favoriteCount} Favorites</div>
             )}
           </div>
-          {view === "accounts" && (
+          {(view === "accounts" || view === "favorites") && (
             <div className="header-actions">
               <div className="search">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg>
@@ -662,32 +667,12 @@ export default function App() {
                   placeholder="Search accounts..."
                 />
               </div>
-              <button className="primary" onClick={handleAddAccount}>
+              {view === "accounts" && <button className="primary" onClick={handleAddAccount}>
                 + Add account
-              </button>
+              </button>}
             </div>
           )}
         </header>
-        {(view === "accounts" || view === "favorites") && (
-          <nav className="service-switcher" aria-label="AI service">
-            {(Object.keys(SERVICES) as ServiceId[]).map((serviceId) => (
-              <button
-                key={serviceId}
-                className={activeService === serviceId ? "active" : ""}
-                aria-pressed={activeService === serviceId}
-                onClick={() => {
-                  setActiveService(serviceId)
-                  setQuery("")
-                  setMenu(null)
-                }}
-              >
-                <img src={SERVICES[serviceId].logo} alt="" />
-                <span>{SERVICES[serviceId].shortName}</span>
-                <b>{accounts.filter((account) => serviceOf(account) === serviceId).length}</b>
-              </button>
-            ))}
-          </nav>
-        )}
         {cacheNotice && (
           <div className="cache-status" role="status">
             <span>{cacheNotice}</span>
@@ -695,6 +680,19 @@ export default function App() {
           </div>
         )}
         {view === "settings" ? (
+          <>
+          <nav className="settings-tabs" aria-label="Settings sections">
+            {["general", "updates", "license", "help"].map((tab) => <button key={tab} className={settingsTab === tab ? "active" : ""} aria-pressed={settingsTab === tab} onClick={() => setSettingsTab(tab)}>{tab === "help" ? "Help & info" : tab[0].toUpperCase() + tab.slice(1)}</button>)}
+          </nav>
+          {settingsTab === "general" ? <>
+          <section className="preload-setting">
+            <div><h2>Account preload</h2><p>Keep up to this many accounts ready on each side of the current profile, per service. More accounts use more memory.</p></div>
+            <label htmlFor="preload-sides">Accounts per side</label>
+            <select id="preload-sides" value={preloadSides} onChange={(event) => { const value = Number(event.target.value); setPreloadSides(value); localStorage.setItem("flowpilot-preload-sides", String(value)) }}>
+              {[0, 1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value === 0 ? "Off" : value}</option>)}
+            </select>
+            <p>Up to {2 * preloadSides + 1} open profiles per service. Applied when you next open a profile. Shortcut buttons are independent of this setting.</p>
+          </section>
           <Settings
             profile={profile}
             onAvatarChange={updateProfileAvatar}
@@ -702,6 +700,8 @@ export default function App() {
             clearingAllCaches={clearingAllCaches}
             onClearAllCaches={() => void handleClearAllAccountCaches()}
           />
+          </> : settingsTab === "updates" ? <UpdatesPage /> : settingsTab === "license" ? <LicensePage licenseState={licenseState} onBuy={() => void openLicensePurchase()} /> : <InfoPage />}
+          </>
         ) : view === "license" ? (
           <LicensePage licenseState={licenseState} onBuy={() => void openLicensePurchase()} />
         ) : view === "updates" ? (
@@ -725,6 +725,7 @@ export default function App() {
                   menuOpen={menu === a.id}
                   onMenu={() => setMenu(menu === a.id ? null : a.id)}
                   onOpen={() => {
+                    setActiveService(serviceOf(a))
                     setActive(a)
                     setView("flow")
                   }}
@@ -739,9 +740,7 @@ export default function App() {
                   onPointerDown={(event) => beginPointerDrag(a.id, event)}
                 />
               ))}
-              {view === "accounts" && (
-                <AddAccountCard onAdd={handleAddAccount} service={activeService} />
-              )}
+
             </div>
             {draggingId && <DragPreview account={accounts.find((a) => a.id === draggingId) || null} point={dragPoint} offset={dragOffset} />}
           </>
@@ -778,14 +777,15 @@ export default function App() {
               {!renamingAccount && activeService !== "flow" && accounts.some((a) => serviceOf(a) === "flow") && (
                 <>
                   <label className="field-label" htmlFor="flow-session">Session (optional)</label>
-                  <select id="flow-session" className="session-select" value={flowSessionId} onChange={(event) => {
+                  <p id="session-help" className="session-note">Choose a Flow profile to use its Google session, or keep normal login for a separate profile.</p>
+                  <select aria-describedby="session-help" id="flow-session" className="session-select" value={flowSessionId} onChange={(event) => {
                     const id = event.target.value
                     setFlowSessionId(id)
                     setAddAccountError("")
                     if (!accountNameEdited) setNewAccountName(accounts.find((a) => a.id === id)?.name || "")
                   }}>
                     <option value="">Normal login · Separate profile</option>
-                    {accounts.filter((a) => serviceOf(a) === "flow").map((a) => <option key={a.id} value={a.id}>Use Flow session: {a.name}</option>)}
+                    {accounts.filter((a) => serviceOf(a) === "flow").map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
                   {flowSessionId && <p className="session-note">Open the account, then choose Continue with Google. This shares the selected Flow profile's sessions; deleting either profile clears the shared local logins.</p>}
                 </>
@@ -835,7 +835,11 @@ function Sidebar({
   setView,
   profile,
   licenseState,
+  accounts, activeService, onService,
 }: {
+  accounts: Account[]
+  activeService: ServiceId
+  onService: (service: ServiceId) => void
   view: string
   setView: (v: any) => void
   profile: { name: string; avatar: string | null }
@@ -845,55 +849,19 @@ function Sidebar({
     <aside>
       <Brand />
       <div className="side-label">WORKSPACE</div>
-      <button
-        className={view === "accounts" || view === "flow" ? "active" : ""}
-        title="Accounts"
-        aria-label="Accounts"
-        onClick={() => setView("accounts")}
-      >
-        <SidebarIcon name="accounts" /> <span>Accounts</span>
+      {(Object.keys(SERVICES) as ServiceId[]).map((id) => <button key={id}
+        className={(view === "accounts" || view === "flow") && activeService === id ? "active" : ""}
+        aria-current={(view === "accounts" || view === "flow") && activeService === id ? "page" : undefined}
+        title={SERVICES[id].name} onClick={() => onService(id)}>
+        <img className="sidebar-service-logo" src={SERVICES[id].logo} alt="" />
+        <span>{SERVICES[id].shortName}</span><b className="service-count">{accounts.filter((a) => serviceOf(a) === id).length}</b>
+      </button>)}
+      <button className={view === "favorites" ? "active" : ""} title="Favorites" onClick={() => setView("favorites")}>
+        <SidebarIcon name="favorites" /><span>Favorites</span>
       </button>
-      <button
-        className={view === "favorites" ? "active" : ""}
-        title="Favorites"
-        aria-label="Favorites"
-        onClick={() => setView("favorites")}
-      >
-        <SidebarIcon name="favorites" /> <span>Favorites</span>
-      </button>
-      <div className="rule" />
-      <div className="side-label">GENERAL</div>
-      <button
-        className={view === "license" ? "active" : ""}
-        title="License"
-        aria-label="License"
-        onClick={() => setView("license")}
-      >
-        <SidebarIcon name="license" /> <span>License</span>
-      </button>
-      <button
-        className={view === "updates" ? "active" : ""}
-        title="Updates"
-        aria-label="Updates"
-        onClick={() => setView("updates")}
-      >
-        <SidebarIcon name="updates" /> <span>Updates</span>
-      </button>
-      <button
-        className={view === "info" ? "active" : ""}
-        title="Info"
-        aria-label="Info"
-        onClick={() => setView("info")}
-      >
-        <SidebarIcon name="info" /> <span>Info</span>
-      </button>
-      <button
-        className={view === "settings" ? "active" : ""}
-        title="Settings"
-        aria-label="Settings"
-        onClick={() => setView("settings")}
-      >
-        <SidebarIcon name="settings" /> <span>Settings</span>
+      <div className="sidebar-spacer" />
+      <button className={view === "settings" ? "active" : ""} title="Settings" onClick={() => setView("settings")}>
+        <SidebarIcon name="settings" /><span>Settings</span>
       </button>
       <div className="side-bottom">
         <div className="avatar">
@@ -1171,16 +1139,6 @@ function InfoPage() {
   )
 }
 
-function AddAccountCard({ onAdd, service = "flow" }: { onAdd: () => void; service?: ServiceId }) {
-  return (
-    <button className="add-card" onClick={onAdd}>
-      <span>＋</span>
-      <b>Add account</b>
-      <small>{SERVICES[service].name}</small>
-    </button>
-  )
-}
-
 function Card({
   a,
   menuOpen,
@@ -1372,6 +1330,7 @@ function Settings({
   )
 }
 function FlowShell({
+  preloadSides, onClosed,
   account,
   accounts,
   bookmarks,
@@ -1384,6 +1343,8 @@ function FlowShell({
   onDeleteBookmark,
   onBack,
 }: {
+  preloadSides: number
+  onClosed: () => void
   account: Account
   accounts: Account[]
   bookmarks: FlowBookmark[]
@@ -1403,6 +1364,31 @@ function FlowShell({
   const [bookmarkName, setBookmarkName] = useState("")
   const [bookmarkUrl, setBookmarkUrl] = useState("")
   const [bookmarkError, setBookmarkError] = useState("")
+  const shortcutListRef = useRef<HTMLDivElement>(null)
+  const revealShortcuts = useRef<"before" | "after" | null>(null)
+  const [moreBefore, setMoreBefore] = useState(0)
+  const [moreAfter, setMoreAfter] = useState(0)
+  useEffect(() => {
+    const list = shortcutListRef.current
+    if (!list) return
+    if (revealShortcuts.current) {
+      list.scrollLeft = revealShortcuts.current === "before" ? 0 : list.scrollWidth
+      revealShortcuts.current = null
+    } else {
+      const selected = list.querySelector<HTMLElement>("[aria-current]")
+      if (selected) {
+        const left = selected.offsetLeft - list.offsetLeft
+        if (left < list.scrollLeft) list.scrollLeft = left
+        else if (left + selected.offsetWidth > list.scrollLeft + list.clientWidth) list.scrollLeft = left + selected.offsetWidth - list.clientWidth
+      }
+    }
+  }, [account.id, moreBefore, moreAfter])
+  const [closing, setClosing] = useState(false)
+  const stopped = useRef(false)
+  const currentIndex = accounts.findIndex((candidate) => candidate.id === account.id)
+  const [shortcutStart, shortcutEnd] = shortcutBounds(accounts.length, currentIndex, moreBefore, moreAfter)
+  const neighborIds = neighborIndices(accounts.length, currentIndex, preloadSides).map((index) => accounts[index].id)
+  const neighborKey = neighborIds.join(",")
   const containerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     setBookmarkManagerOpen(false)
@@ -1410,9 +1396,11 @@ function FlowShell({
     setBookmarkUrl("")
     setBookmarkError("")
     let cancelled = false
+    stopped.current = false
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
-    invoke("open_google_flow", {
+    invoke<number>("prepare_workspace", {
+      neighbors: neighborIds,
       accountId: account.id,
       service: serviceId,
       x: rect.left,
@@ -1420,9 +1408,20 @@ function FlowShell({
       width: rect.width,
       height: rect.height,
     })
-      .then(() => {
-        if (!cancelled) setStatus(`${service.name} workspace`)
+      .then(async (epoch) => {
+        if (cancelled || stopped.current) return
+        setStatus(`${service.name} workspace`)
         containerRef.current?.dispatchEvent(new Event("flowpilot-webview-ready"))
+        for (const id of neighborIds) {
+          await new Promise((resolve) => setTimeout(resolve, 150))
+          if (cancelled || stopped.current) break
+          try {
+            await invoke("preload_workspace", { accountId: id, service: serviceId, epoch, width: rect.width, height: rect.height })
+          } catch (error) {
+            if (!cancelled && !stopped.current) setStatus("Workspace open. Some nearby accounts could not preload.")
+            console.warn("Account preload failed", error)
+          }
+        }
       })
       .catch((error) => {
         console.error(`${service.name} WebView failed`, error)
@@ -1432,7 +1431,7 @@ function FlowShell({
       cancelled = true
       void invoke("close_google_flow", { accountId: account.id, service: serviceId })
     }
-  }, [account.id, serviceId])
+  }, [account.id, serviceId, preloadSides, neighborKey])
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -1450,6 +1449,17 @@ function FlowShell({
       container.removeEventListener("flowpilot-webview-ready", onReady)
     }
   }, [navigatorOpen, fullView, account.id, serviceId])
+  const closeWorkspaces = async (all: boolean) => {
+    stopped.current = true
+    setClosing(true)
+    try {
+      await invoke("close_workspaces", { service: all ? null : serviceId })
+      onClosed()
+    } catch (error) {
+      setStatus(`Unable to close workspaces: ${String(error)}`)
+      setClosing(false)
+    }
+  }
   const showWebview = async () => {
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
@@ -1523,21 +1533,27 @@ function FlowShell({
         <button className="back" onClick={onBack}>‹ Accounts</button>
         <span className="flow-status" role="status">{status}</span>
         <div className="flow-controls">
-          <div className="mini-navigator">
-            <img src={account.avatarUrl || service.logo} alt="" />
-            <select className="navigator-trigger" aria-label="Active account" value={account.id}
-              onChange={(event) => {
-                const selected = accounts.find((candidate) => candidate.id === event.target.value)
-                if (selected) onSelectAccount(selected)
-              }}>
-              {accounts.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
-            </select>
-          </div>
+          <strong className="active-profile-name" title={account.name}>{account.name}</strong>
+          <select className="close-workspaces" aria-label="Close workspaces" value="" disabled={closing}
+            onChange={(event) => { if (event.target.value) void closeWorkspaces(event.target.value === "all") }}>
+            <option value="" disabled>{closing ? "Closing..." : "Close"}</option>
+            <option value="service">Close {service.shortName}</option>
+            <option value="all">Close all services</option>
+          </select>
           <button className="fullscreen" onClick={onToggleFullView}>
             {fullView ? "Exit Full View" : "Full View"}
           </button>
         </div>
       </div>
+      <nav className="account-shortcuts" aria-label="Account shortcuts">
+        <button className="shortcut-more" disabled={shortcutStart === 0 || closing} onClick={() => { revealShortcuts.current = "before"; setMoreBefore((value) => value + 5) }}>Oldest more</button>
+        <div className="shortcut-list" ref={shortcutListRef}>
+          {accounts.slice(shortcutStart, shortcutEnd).map((candidate) => <button key={candidate.id}
+            className={candidate.id === account.id ? "active" : ""} aria-current={candidate.id === account.id ? "true" : undefined}
+            disabled={closing} title={candidate.name} onClick={() => onSelectAccount(candidate)}>{candidate.name}</button>)}
+        </div>
+        <button className="shortcut-more" disabled={shortcutEnd === accounts.length || closing} onClick={() => { revealShortcuts.current = "after"; setMoreAfter((value) => value + 5) }}>Latest more</button>
+      </nav>
       {serviceId === "flow" && (
         <nav className="flow-bookmark-bar" aria-label="Google Flow bookmarks">
           <button type="button" className="flow-bookmark flow-bookmark-home" onClick={() => void navigateFlow(service.url, "Flow")}>

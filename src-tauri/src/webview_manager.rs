@@ -18,7 +18,7 @@ use webview2_com::{
 use windows::core::Interface;
 
 const WEBVIEW_LABEL_PREFIX: &str = "flowpilot-service";
-const MAX_CACHED_WEBVIEWS: usize = 10;
+
 
 pub struct WebviewManager {
     active_account_id: Mutex<Option<String>>,
@@ -26,6 +26,8 @@ pub struct WebviewManager {
     cached_accounts: Mutex<HashMap<String, u64>>,
     usage_counter: Mutex<u64>,
     operation: Mutex<()>,
+    preload_epoch: Mutex<u64>,
+    preload_targets: Mutex<Vec<String>>,
 }
 
 impl Default for WebviewManager {
@@ -36,6 +38,8 @@ impl Default for WebviewManager {
             cached_accounts: Mutex::new(HashMap::new()),
             usage_counter: Mutex::new(0),
             operation: Mutex::new(()),
+            preload_epoch: Mutex::new(0),
+            preload_targets: Mutex::new(Vec::new()),
         }
     }
 }
@@ -298,6 +302,13 @@ fn validate_bounds(x: f64, y: f64, width: f64, height: f64) -> Result<(), String
 }
 
 pub fn open<R: Runtime>(
+    app: &AppHandle<R>, account_id: String, service: String,
+    x: f64, y: f64, width: f64, height: f64,
+) -> Result<(), String> {
+    open_view(app, account_id, service, x, y, width, height, false)
+}
+
+fn open_view<R: Runtime>(
     app: &AppHandle<R>,
     account_id: String,
     service: String,
@@ -305,6 +316,7 @@ pub fn open<R: Runtime>(
     y: f64,
     width: f64,
     height: f64,
+    background: bool,
 ) -> Result<(), String> {
     let state = app.state::<WebviewManager>();
     let operation = state
@@ -323,15 +335,17 @@ pub fn open<R: Runtime>(
         .lock()
         .map_err(|_| "webview state unavailable")?
         .clone();
-    if let Some(active_id) = active_account.as_deref() {
-        if active_id != key {
-            if let Some(webview) = app.get_webview(&webview_label(active_id)) {
-                webview.hide().map_err(|e| e.to_string())?;
+    if !background {
+        if let Some(active_id) = active_account.as_deref() {
+            if active_id != key {
+                if let Some(webview) = app.get_webview(&webview_label(active_id)) {
+                    webview.hide().map_err(|e| e.to_string())?;
+                }
             }
         }
     }
-
     if let Some(webview) = app.get_webview(&requested_label) {
+        if background { return Ok(()); }
         webview
             .set_position(tauri::LogicalPosition::new(x, y))
             .map_err(|e| e.to_string())?;
@@ -351,31 +365,6 @@ pub fn open<R: Runtime>(
         return Ok(());
     }
 
-    {
-        let mut cached = state
-            .cached_accounts
-            .lock()
-            .map_err(|_| "webview state unavailable")?;
-        if cached.len() >= MAX_CACHED_WEBVIEWS {
-            let eviction = cached
-                .iter()
-                .filter(|(id, _)| Some(id.as_str()) != active_account.as_deref())
-                .min_by_key(|(_, last_used)| **last_used)
-                .map(|(id, _)| id.clone());
-            if let Some(evicted_id) = eviction {
-                let evicted_label = webview_label(&evicted_id);
-                crate::webview_download_bridge::cancel_for_webview(
-                    &app.state::<crate::webview_download_bridge::DownloadState>(),
-                    &evicted_label,
-                );
-                if let Some(webview) = app.get_webview(&evicted_label) {
-                    webview.close().map_err(|e| e.to_string())?;
-                }
-                cached.remove(&evicted_id);
-            }
-        }
-    }
-
     let storage_key = session_key(app, &service, &account_id)?;
     let shared_session = storage_key != key;
     let profile = profile_path(app, &storage_key)?;
@@ -388,6 +377,7 @@ pub fn open<R: Runtime>(
     let popup_prefix = format!("{requested_label}-popup-");
     let popup_profile = profile.clone();
     let builder = WebviewBuilder::new(requested_label.clone(), url)
+        .focused(!background)
         .data_directory(profile)
         .initialization_script_for_all_frames(crate::webview_download_bridge::INIT_SCRIPT)
         .on_navigation(|url| url.scheme() == "https")
@@ -416,7 +406,7 @@ pub fn open<R: Runtime>(
     window
         .add_child(
             builder,
-            tauri::LogicalPosition::new(x, y),
+            tauri::LogicalPosition::new(if background { -10000.0 } else { x }, if background { -10000.0 } else { y }),
             tauri::LogicalSize::new(width, height),
         )
         .map_err(|e| e.to_string())?;
@@ -433,6 +423,13 @@ pub fn open<R: Runtime>(
             .map_err(|e| e.to_string())?;
     }
 
+    if background {
+        if let Some(webview) = app.get_webview(&requested_label) {
+            webview.hide().map_err(|e| e.to_string())?;
+        }
+        touch_account(&state, &key)?;
+        return Ok(());
+    }
     *state
         .active_account_id
         .lock()
@@ -444,6 +441,63 @@ pub fn open<R: Runtime>(
     touch_account(&state, &key)?;
     drop(operation);
     Ok(())
+}
+
+// These operations run on the UI thread. Epochs reject stale queued preload work.
+fn cancel_preloads(state: &WebviewManager) -> Result<u64, String> {
+    let mut epoch = state.preload_epoch.lock().map_err(|_| "webview state unavailable")?;
+    *epoch = epoch.wrapping_add(1);
+    state.preload_targets.lock().map_err(|_| "webview state unavailable")?.clear();
+    Ok(*epoch)
+}
+
+fn destroy_views<R: Runtime>(app: &AppHandle<R>, service: Option<&str>, keep: &[String]) -> Result<(), String> {
+    let state = app.state::<WebviewManager>();
+    let keys: Vec<String> = state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
+        .keys().filter(|key| service.map_or(true, |s| key.starts_with(&format!("{s}-"))) && !keep.contains(key)).cloned().collect();
+    for key in keys {
+        let label = webview_label(&key);
+        for (popup_label, popup) in app.webview_windows() {
+            if popup_label.starts_with(&format!("{label}-popup-")) { popup.close().map_err(|e| e.to_string())?; }
+        }
+        crate::webview_download_bridge::cancel_for_webview(&app.state::<crate::webview_download_bridge::DownloadState>(), &label);
+        if let Some(webview) = app.get_webview(&label) { webview.close().map_err(|e| e.to_string())?; }
+        state.cached_accounts.lock().map_err(|_| "webview state unavailable")?.remove(&key);
+        let mut active = state.active_account_id.lock().map_err(|_| "webview state unavailable")?;
+        if active.as_deref() == Some(key.as_str()) {
+            *active = None;
+            *state.visible.lock().map_err(|_| "webview state unavailable")? = false;
+        }
+    }
+    Ok(())
+}
+
+pub fn prepare_workspace<R: Runtime>(app: &AppHandle<R>, account_id: String, service: String,
+    neighbors: Vec<String>, x: f64, y: f64, width: f64, height: f64) -> Result<u64, String> {
+    if neighbors.len() > 10 { return Err("too many preload neighbors".into()); }
+    let state = app.state::<WebviewManager>();
+    let mut keep = vec![profile_key(&service, &account_id)?];
+    for id in &neighbors { keep.push(profile_key(&service, id)?); }
+    let epoch = cancel_preloads(&state)?;
+    destroy_views(app, Some(&service), &keep)?;
+    open(app, account_id, service, x, y, width, height)?;
+    *state.preload_targets.lock().map_err(|_| "webview state unavailable")? = keep;
+    Ok(epoch)
+}
+
+pub fn preload_workspace<R: Runtime>(app: &AppHandle<R>, account_id: String, service: String,
+    epoch: u64, width: f64, height: f64) -> Result<(), String> {
+    let state = app.state::<WebviewManager>();
+    if *state.preload_epoch.lock().map_err(|_| "webview state unavailable")? != epoch { return Ok(()); }
+    let key = profile_key(&service, &account_id)?;
+    if !state.preload_targets.lock().map_err(|_| "webview state unavailable")?.contains(&key) { return Ok(()); }
+    open_view(app, account_id, service, 0.0, 0.0, width, height, true)
+}
+
+pub fn close_workspaces<R: Runtime>(app: &AppHandle<R>, service: Option<String>) -> Result<(), String> {
+    if let Some(s) = &service { service_url(s)?; }
+    cancel_preloads(&app.state::<WebviewManager>())?;
+    destroy_views(app, service.as_deref(), &[])
 }
 
 pub fn navigate_flow_bookmark<R: Runtime>(
@@ -487,6 +541,7 @@ pub fn navigate_flow_bookmark<R: Runtime>(
 
 pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>, service: Option<String>) -> Result<(), String> {
     let state = app.state::<WebviewManager>();
+    cancel_preloads(&state)?;
     let operation = state
         .operation
         .lock()
@@ -565,6 +620,7 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
         }
     }
     let state = app.state::<WebviewManager>();
+    cancel_preloads(&state)?;
     let _operation = state
         .operation
         .lock()
@@ -619,5 +675,22 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
             eprintln!("[flowpilot-webview] profile cleanup pending account={account_id}: {error}");
             Ok(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod preload_tests {
+    use super::{cancel_preloads, WebviewManager};
+
+    #[test]
+    fn cancelling_invalidates_queued_preloads_and_clears_targets() {
+        let state = WebviewManager::default();
+        let first = cancel_preloads(&state).unwrap();
+        state.preload_targets.lock().unwrap().push("flow-a".into());
+        let closed = cancel_preloads(&state).unwrap();
+        assert_ne!(first, closed);
+        assert!(state.preload_targets.lock().unwrap().is_empty());
+        let reopened = cancel_preloads(&state).unwrap();
+        assert_ne!(closed, reopened);
     }
 }
