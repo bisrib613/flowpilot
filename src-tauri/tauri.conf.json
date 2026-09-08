@@ -12,11 +12,11 @@
   "app": {
     "windows": [{
       "title": "Flowpilot",
-      "width": 540,
-      "height": 620,
+      "width": 1180,
+      "height": 780,
       "minWidth": 540,
       "minHeight": 620,
-      "resizable": false,
+      "resizable": true,
       "center": true,
       "decorations": true,
       "theme": "Dark"

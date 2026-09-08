@@ -8,5 +8,6 @@ import "./styles/info-privacy.css"
 import "./styles/scroll-layout.css"
 import "./styles/profile-license.css"
 import "./styles/updater.css"
+import "./styles/workspace.css"
 
 createRoot(document.getElementById("root")!).render(<React.StrictMode><App /></React.StrictMode>)
