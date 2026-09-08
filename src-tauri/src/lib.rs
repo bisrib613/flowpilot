@@ -46,6 +46,26 @@ async fn open_google_flow(
 }
 
 #[tauri::command]
+async fn prepare_workspace(app: tauri::AppHandle, account_id: String, service: String,
+    neighbors: Vec<String>, x: f64, y: f64, width: f64, height: f64) -> Result<u64, String> {
+    let operation_app = app.clone();
+    run_on_ui_thread(&app, move || webview_manager::prepare_workspace(&operation_app, account_id, service, neighbors, x, y, width, height)).await
+}
+
+#[tauri::command]
+async fn preload_workspace(app: tauri::AppHandle, account_id: String, service: String,
+    epoch: u64, width: f64, height: f64) -> Result<(), String> {
+    let operation_app = app.clone();
+    run_on_ui_thread(&app, move || webview_manager::preload_workspace(&operation_app, account_id, service, epoch, width, height)).await
+}
+
+#[tauri::command]
+async fn close_workspaces(app: tauri::AppHandle, service: Option<String>) -> Result<(), String> {
+    let operation_app = app.clone();
+    run_on_ui_thread(&app, move || webview_manager::close_workspaces(&operation_app, service)).await
+}
+
+#[tauri::command]
 async fn close_google_flow(
     app: tauri::AppHandle,
     account_id: Option<String>,
@@ -170,6 +190,9 @@ pub fn run() {
             expand_main_window,
             open_external_url,
             open_google_flow,
+            prepare_workspace,
+            preload_workspace,
+            close_workspaces,
             close_google_flow,
             resize_google_flow,
             navigate_google_flow,
