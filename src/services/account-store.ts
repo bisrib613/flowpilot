@@ -9,6 +9,7 @@ export type StoredAccount = {
   favorite: boolean
   order: number
   service?: "flow" | "dola" | "leonardo" | "chatgpt" | "migoo"
+  flowSessionId?: string
 }
 
 const STORAGE_KEY = "flowpilot-accounts"
@@ -25,7 +26,12 @@ function isAccount(value: unknown): value is StoredAccount {
     typeof account.avatar === "string" &&
     typeof account.favorite === "boolean" &&
     typeof account.order === "number" &&
-    (account.service === undefined || SERVICES.has(account.service))
+    (account.service === undefined || SERVICES.has(account.service)) &&
+    (account.flowSessionId === undefined || (
+      typeof account.flowSessionId === "string" &&
+      /^[A-Za-z0-9_-]{1,128}$/.test(account.flowSessionId) &&
+      account.service !== undefined && account.service !== "flow"
+    ))
   )
 }
 

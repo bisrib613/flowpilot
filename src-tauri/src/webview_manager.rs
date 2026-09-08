@@ -61,6 +61,61 @@ fn webview_label(profile_key: &str) -> String {
     format!("{WEBVIEW_LABEL_PREFIX}-{profile_key}")
 }
 
+// Webview labels remain per service account; only the disk profile is shared.
+fn session_key_from_accounts(accounts: &serde_json::Value, service: &str, account_id: &str) -> Result<String, String> {
+    let own_key = profile_key(service, account_id)?;
+    if let Some(account) = accounts.as_array().and_then(|rows| rows.iter().find(|row| {
+        row.get("id").and_then(|v| v.as_str()) == Some(account_id)
+            && row.get("service").and_then(|v| v.as_str()).unwrap_or("flow") == service
+    })) {
+        if let Some(source) = account.get("flowSessionId") {
+            if service == "flow" { return Err("Flow profiles cannot link to another session".into()); }
+            let source_id = source.as_str().ok_or("invalid Flow session id")?;
+            return profile_key("flow", source_id);
+        }
+    }
+    Ok(own_key)
+}
+
+fn session_key<R: Runtime>(app: &AppHandle<R>, service: &str, account_id: &str) -> Result<String, String> {
+    let accounts = crate::account_store::load_accounts(app.clone())?.unwrap_or(serde_json::Value::Null);
+    session_key_from_accounts(&accounts, service, account_id)
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::session_key_from_accounts;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_and_normal_profiles_keep_their_existing_directories() {
+        let accounts = json!([{"id":"a","name":"Original"}, {"id":"b","service":"chatgpt"}]);
+        assert_eq!(session_key_from_accounts(&accounts, "flow", "a").unwrap(), "flow-a");
+        assert_eq!(session_key_from_accounts(&accounts, "chatgpt", "b").unwrap(), "chatgpt-b");
+    }
+
+    #[test]
+    fn selected_identity_survives_rename_and_source_card_deletion() {
+        let accounts = json!([
+            {"id":"a","service":"flow","name":"Renamed Flow"},
+            {"id":"b","service":"chatgpt","name":"GPT Work","flowSessionId":"a"},
+            {"id":"c","service":"dola","flowSessionId":"other"}
+        ]);
+        assert_eq!(session_key_from_accounts(&accounts, "chatgpt", "b").unwrap(), "flow-a");
+        assert_eq!(session_key_from_accounts(&accounts, "dola", "c").unwrap(), "flow-other");
+        let remaining = json!([accounts[1].clone()]);
+        assert_eq!(session_key_from_accounts(&remaining, "chatgpt", "b").unwrap(), "flow-a");
+    }
+
+    #[test]
+    fn linked_ids_cannot_escape_the_profile_root() {
+        let accounts = json!([{"id":"b","service":"chatgpt","flowSessionId":"../other"}]);
+        assert!(session_key_from_accounts(&accounts, "chatgpt", "b").is_err());
+        let accounts = json!([{"id":"a","service":"flow","flowSessionId":"b"}]);
+        assert!(session_key_from_accounts(&accounts, "flow", "a").is_err());
+    }
+}
+
 fn touch_account(state: &WebviewManager, account_id: &str) -> Result<(), String> {
     let mut counter = state
         .usage_counter
@@ -209,7 +264,7 @@ pub fn begin_clear_disk_cache<R: Runtime>(
     service: String,
 ) -> Result<Option<std::sync::mpsc::Receiver<Result<(), String>>>, String> {
     let key = profile_key(&service, &account_id)?;
-    let profile = profile_path(app, &key)?;
+    let profile = profile_path(app, &session_key(app, &service, &account_id)?)?;
     if !profile.exists() {
         return Ok(None);
     }
@@ -321,17 +376,43 @@ pub fn open<R: Runtime>(
         }
     }
 
-    let profile = profile_path(app, &key)?;
+    let storage_key = session_key(app, &service, &account_id)?;
+    let shared_session = storage_key != key;
+    let profile = profile_path(app, &storage_key)?;
     let url = WebviewUrl::External(
         service_url(&service)?
             .parse()
         .map_err(|_| "invalid service URL")?,
     );
+    let popup_app = app.clone();
+    let popup_prefix = format!("{requested_label}-popup-");
+    let popup_profile = profile.clone();
     let builder = WebviewBuilder::new(requested_label.clone(), url)
         .data_directory(profile)
         .initialization_script_for_all_frames(crate::webview_download_bridge::INIT_SCRIPT)
         .on_navigation(|url| url.scheme() == "https")
-        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
+        .on_new_window(move |url, features| {
+            if shared_session && (url.scheme() == "https" || url.as_str() == "about:blank") {
+                // window_features retains the opener environment and OAuth popup relationship.
+                let popup = tauri::WebviewWindowBuilder::new(
+                    &popup_app,
+                    format!("{}{}", popup_prefix, uuid::Uuid::new_v4()),
+                    WebviewUrl::External("about:blank".parse().expect("valid blank URL")),
+                )
+                .data_directory(popup_profile.clone())
+                .window_features(features)
+                .title("Sign in")
+                .inner_size(520.0, 720.0)
+                .on_navigation(|url| url.scheme() == "https" || url.as_str() == "about:blank")
+                .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+                .build();
+                match popup {
+                    Ok(window) => return tauri::webview::NewWindowResponse::Create { window },
+                    Err(error) => eprintln!("[flowpilot-webview] sign-in window failed: {error}"),
+                }
+            }
+            tauri::webview::NewWindowResponse::Deny
+        });
     window
         .add_child(
             builder,
@@ -470,33 +551,56 @@ pub fn resize<R: Runtime>(
 
 pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: String) -> Result<bool, String> {
     let key = profile_key(&service, &account_id)?;
+    let accounts = crate::account_store::load_accounts(app.clone())?.unwrap_or(serde_json::Value::Null);
+    let storage_key = session_key_from_accounts(&accounts, &service, &account_id)?;
+    let mut affected = vec![key.clone()];
+    if let Some(rows) = accounts.as_array() {
+        for row in rows {
+            let Some(id) = row.get("id").and_then(|v| v.as_str()) else { continue };
+            let service = row.get("service").and_then(|v| v.as_str()).unwrap_or("flow");
+            if session_key_from_accounts(&accounts, service, id)? == storage_key {
+                let linked_key = profile_key(service, id)?;
+                if !affected.contains(&linked_key) { affected.push(linked_key); }
+            }
+        }
+    }
     let state = app.state::<WebviewManager>();
     let _operation = state
         .operation
         .lock()
         .map_err(|_| "webview state unavailable")?;
-    let label = webview_label(&key);
-
-    crate::webview_download_bridge::cancel_for_webview(
-        &app.state::<crate::webview_download_bridge::DownloadState>(),
-        &label,
-    );
-    if let Some(webview) = app.get_webview(&label) {
-        webview.close().map_err(|e| e.to_string())?;
+    for affected_key in &affected {
+        let label = webview_label(affected_key);
+        let popup_prefix = format!("{label}-popup-");
+        for (popup_label, popup) in app.webview_windows() {
+            if popup_label.starts_with(&popup_prefix) {
+                popup.close().map_err(|e| e.to_string())?;
+            }
+        }
+        crate::webview_download_bridge::cancel_for_webview(
+            &app.state::<crate::webview_download_bridge::DownloadState>(), &label,
+        );
+        if let Some(webview) = app.get_webview(&label) {
+            webview.close().map_err(|e| e.to_string())?;
+        }
+        let maintenance = format!("flowpilot-cache-maintenance-{affected_key}");
+        if let Some(webview) = app.get_webview(&maintenance) {
+            webview.close().map_err(|e| e.to_string())?;
+        }
     }
     {
         let mut cached = state
             .cached_accounts
             .lock()
             .map_err(|_| "webview state unavailable")?;
-        cached.remove(&key);
+        for affected_key in &affected { cached.remove(affected_key); }
     }
     {
         let mut active = state
             .active_account_id
             .lock()
             .map_err(|_| "webview state unavailable")?;
-        if active.as_deref() == Some(key.as_str()) {
+        if active.as_ref().is_some_and(|key| affected.contains(key)) {
             *active = None;
             *state
                 .visible
@@ -505,7 +609,7 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
         }
     }
 
-    let profile = profile_path(app, &key)?;
+    let profile = profile_path(app, &storage_key)?;
     if !profile.exists() {
         return Ok(true);
     }
