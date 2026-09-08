@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { getVersion } from "@tauri-apps/api/app"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { invoke } from "@tauri-apps/api/core"
-import { PhysicalSize } from "@tauri-apps/api/dpi"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
@@ -172,6 +171,7 @@ export default function App() {
   const [clearingAllCaches, setClearingAllCaches] = useState(false)
   const [addAccountOpen, setAddAccountOpen] = useState(false)
   const [newAccountName, setNewAccountName] = useState("")
+  const [renamingAccount, setRenamingAccount] = useState<Account | null>(null)
   const [addAccountError, setAddAccountError] = useState("")
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dragPoint, setDragPoint] = useState({ x: 0, y: 0 })
@@ -185,9 +185,10 @@ export default function App() {
   const dragTargetIdRef = useRef<string | null>(null)
   const dragInsertAfterRef = useRef(false)
   const handleRename = (a: Account) => {
-    const n = prompt("Rename account", a.name)
-    if (n)
-      setAccounts(accounts.map((x) => (x.id === a.id ? { ...x, name: n } : x)))
+    setRenamingAccount(a)
+    setNewAccountName(a.name)
+    setAddAccountError("")
+    setAddAccountOpen(true)
     setMenu(null)
   }
   const handleDelete = (a: Account) => {
@@ -259,6 +260,7 @@ export default function App() {
     setMenu(null)
   }
   const handleAddAccount = () => {
+    setRenamingAccount(null)
     setNewAccountName("")
     setAddAccountError("")
     setAddAccountOpen(true)
@@ -271,6 +273,12 @@ export default function App() {
     }
     if (name.length > 80) {
       setAddAccountError("Account name must be 80 characters or fewer.")
+      return
+    }
+    if (renamingAccount) {
+      setAccounts((current) => current.map((account) => account.id === renamingAccount.id ? { ...account, name } : account))
+      setAddAccountOpen(false)
+      setRenamingAccount(null)
       return
     }
     const a: Account = {
@@ -444,6 +452,46 @@ export default function App() {
   }
   const openLicensePurchase = () =>
     invoke("open_external_url", { url: LICENSE_PURCHASE_URL })
+  useEffect(() => {
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return
+      setMenu(null)
+      setDialog(null)
+      setAddAccountOpen(false)
+    }
+    window.addEventListener("keydown", dismiss)
+    return () => window.removeEventListener("keydown", dismiss)
+  }, [])
+  useEffect(() => {
+    if (!menu) return
+    const dismiss = (event: MouseEvent) => {
+      if (!(event.target as Element).closest(".menu-wrap")) setMenu(null)
+    }
+    document.addEventListener("click", dismiss)
+    return () => document.removeEventListener("click", dismiss)
+  }, [menu])
+  useEffect(() => {
+    if (!dialog && !addAccountOpen) return
+    const previousFocus = document.activeElement as HTMLElement | null
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return
+      const controls = document.querySelectorAll<HTMLElement>('.dialog button:not(:disabled), .dialog input:not(:disabled)')
+      const first = controls[0]
+      const last = controls[controls.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last?.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first?.focus()
+      }
+    }
+    document.addEventListener("keydown", trapFocus)
+    return () => {
+      document.removeEventListener("keydown", trapFocus)
+      if (previousFocus?.isConnected) previousFocus.focus()
+    }
+  }, [dialog, addAccountOpen])
   if (licenseChecking && !licensed)
     return <div className="gate"><div className="gate-card"><Brand /><h1>Checking your license</h1><p>Connecting securely to Flowpilot License Server…</p></div></div>
   if (!licensed)
@@ -537,10 +585,10 @@ export default function App() {
   return (
     <div className="app">
       <Sidebar view={view} setView={setView} profile={profile} licenseState={licenseState} />
-      <main className="content">
+      <main className={`content ${view === "accounts" || view === "favorites" ? "accounts-page" : ""}`}>
         <header>
           <div>
-            <div className="eyebrow">
+            <div className="eyebrow page-eyebrow" aria-hidden="true">
               FLOWPILOT /{" "}
               {view === "settings"
                 ? "SETTINGS"
@@ -559,7 +607,7 @@ export default function App() {
                 ? "Updates"
                 : view === "info"
                 ? "How to Use Flowpilot"
-                : `${SERVICES[activeService].name} Accounts`}
+                : "Accounts"}
             </h1>
             <p>
               {view === "settings"
@@ -577,7 +625,7 @@ export default function App() {
             {view === "accounts" && (
               <div className="account-count">
                 {serviceAccounts.length}{" "}
-                {serviceAccounts.length === 1 ? "Account" : "Accounts"}
+                {serviceAccounts.length === 1 ? "profile" : "profiles"} in {SERVICES[activeService].name}
               </div>
             )}
             {view === "favorites" && (
@@ -587,15 +635,16 @@ export default function App() {
           {view === "accounts" && (
             <div className="header-actions">
               <div className="search">
-                ⌕
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg>
                 <input
+                  aria-label="Search accounts"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Search accounts..."
                 />
               </div>
               <button className="primary" onClick={handleAddAccount}>
-                ＋ Add Account
+                + Add account
               </button>
             </div>
           )}
@@ -606,6 +655,7 @@ export default function App() {
               <button
                 key={serviceId}
                 className={activeService === serviceId ? "active" : ""}
+                aria-pressed={activeService === serviceId}
                 onClick={() => {
                   setActiveService(serviceId)
                   setQuery("")
@@ -641,6 +691,13 @@ export default function App() {
           <InfoPage />
         ) : (
           <>
+            {!accountsLoaded && <p className="account-empty" role="status">Loading accounts...</p>}
+            {accountsLoaded && displayed.length === 0 && (
+              <div className="account-empty" role="status">
+                <h2>{query ? "No matching accounts" : view === "favorites" ? "No favorites yet" : `No ${SERVICES[activeService].shortName} accounts yet`}</h2>
+                <p>{query ? "Try a different profile name." : view === "favorites" ? "Mark an account as a favorite to find it here." : "Add an account to create your first profile for this service."}</p>
+              </div>
+            )}
             <div className="grid">
               {displayed.map((a) => (
                 <Card
@@ -672,14 +729,13 @@ export default function App() {
         )}
         {dialog && (
           <div className="overlay">
-            <div className="dialog">
-              <h2>Delete {dialog.name}?</h2>
+            <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+              <h2 id="delete-title">Delete {dialog.name}?</h2>
               <p>
-                This removes the account card from Flowpilot. Your Google
-                account is not affected.
+                This deletes this local profile, including its cookies and saved login. It does not delete your account with the service.
               </p>
               <div className="dialog-actions">
-                <button className="secondary" onClick={() => setDialog(null)}>
+                <button autoFocus className="secondary" onClick={() => setDialog(null)}>
                   Cancel
                 </button>
                 <button
@@ -695,9 +751,11 @@ export default function App() {
         {addAccountOpen && (
           <div className="overlay">
             <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="add-account-title">
-              <h2 id="add-account-title">Add Account</h2>
-              <p>Enter a name for this {SERVICES[activeService].name} account.</p>
+              <h2 id="add-account-title">{renamingAccount ? "Rename account" : "Add account"}</h2>
+              <p>{renamingAccount ? "Choose a name you can recognize in your account list." : `Create a profile for ${SERVICES[activeService].name}. You can sign in after opening it.`}</p>
+              <label className="field-label" htmlFor="account-name">Profile name</label>
               <input
+                id="account-name"
                 autoFocus
                 value={newAccountName}
                 onChange={(event) => {
@@ -716,7 +774,7 @@ export default function App() {
                   Cancel
                 </button>
                 <button className="primary" onClick={createAccount}>
-                  Add Account
+                  {renamingAccount ? "Save name" : "Add account"}
                 </button>
               </div>
             </div>
@@ -750,13 +808,17 @@ function Sidebar({
       <Brand />
       <div className="side-label">WORKSPACE</div>
       <button
-        className={view === "accounts" ? "active" : ""}
+        className={view === "accounts" || view === "flow" ? "active" : ""}
+        title="Accounts"
+        aria-label="Accounts"
         onClick={() => setView("accounts")}
       >
         <SidebarIcon name="accounts" /> <span>Accounts</span>
       </button>
       <button
         className={view === "favorites" ? "active" : ""}
+        title="Favorites"
+        aria-label="Favorites"
         onClick={() => setView("favorites")}
       >
         <SidebarIcon name="favorites" /> <span>Favorites</span>
@@ -765,24 +827,32 @@ function Sidebar({
       <div className="side-label">GENERAL</div>
       <button
         className={view === "license" ? "active" : ""}
+        title="License"
+        aria-label="License"
         onClick={() => setView("license")}
       >
         <SidebarIcon name="license" /> <span>License</span>
       </button>
       <button
         className={view === "updates" ? "active" : ""}
+        title="Updates"
+        aria-label="Updates"
         onClick={() => setView("updates")}
       >
         <SidebarIcon name="updates" /> <span>Updates</span>
       </button>
       <button
         className={view === "info" ? "active" : ""}
+        title="Info"
+        aria-label="Info"
         onClick={() => setView("info")}
       >
         <SidebarIcon name="info" /> <span>Info</span>
       </button>
       <button
         className={view === "settings" ? "active" : ""}
+        title="Settings"
+        aria-label="Settings"
         onClick={() => setView("settings")}
       >
         <SidebarIcon name="settings" /> <span>Settings</span>
@@ -792,7 +862,7 @@ function Sidebar({
           {profile.avatar ? (
             <img src={profile.avatar} alt="Flowpilot profile" />
           ) : (
-            "YK"
+            profile.name.slice(0, 2).toUpperCase()
           )}
         </div>
         <div>
@@ -1067,8 +1137,8 @@ function AddAccountCard({ onAdd, service = "flow" }: { onAdd: () => void; servic
   return (
     <button className="add-card" onClick={onAdd}>
       <span>＋</span>
-      <b>Add Account</b>
-      <small>Add another {SERVICES[service].name} account</small>
+      <b>Add account</b>
+      <small>{SERVICES[service].name}</small>
     </button>
   )
 }
@@ -1109,11 +1179,13 @@ function Card({
         <button
           className={`star ${a.favorite ? "fav" : ""}`}
           onClick={onFavorite}
+          aria-label={a.favorite ? "Remove from favorites" : "Add to favorites"}
+          aria-pressed={a.favorite}
         >
           {a.favorite ? "★" : "☆"}
         </button>
         <div className="menu-wrap">
-          <button className="more" onClick={onMenu}>
+          <button className="more" onClick={onMenu} aria-label={`Options for ${a.name}`} aria-expanded={menuOpen}>
             •••
           </button>
           {menuOpen && (
@@ -1133,6 +1205,7 @@ function Card({
           )}
         </div>
       </div>
+      <div className="account-identity">
       <div className="avatar large">
         <img
           src={a.avatarUrl || service.logo}
@@ -1140,14 +1213,11 @@ function Card({
           draggable={false}
         />
       </div>
-      <h2>{a.name}</h2>
-      <button className="primary wide" onClick={onOpen}>
-        Open {service.shortName} <span>→</span>
-      </button>
-      <div className="card-links">
-        <button onClick={onRename}>✎ Rename</button>
-        <button onClick={onDelete}>⌫ Remove</button>
+      <div className="account-name"><h2 title={a.name}>{a.name}</h2><p>{service.name}</p></div>
       </div>
+      <button className="primary wide" onClick={onOpen}>
+        Open {service.shortName}
+      </button>
     </article>
   )
 }
@@ -1158,9 +1228,11 @@ function DragPreview({ account, point, offset }: { account: Account | null; poin
     <div className="custom-drag-layer" aria-hidden="true">
       <article className="drag-preview-card" style={{ transform: `translate3d(${point.x - offset.x}px, ${point.y - offset.y}px, 0) scale(1.04) rotate(2deg)` }}>
         <div className="card-top"><span className={`star ${account.favorite ? "fav" : ""}`}>{account.favorite ? "★" : "☆"}</span><span className="more">•••</span></div>
-        <div className="avatar large"><img src={account.avatarUrl || service.logo} alt="" /></div>
-        <h2>{account.name}</h2>
-        <div className="primary wide">Open {service.shortName} <span>→</span></div>
+        <div className="account-identity">
+          <div className="avatar large"><img src={account.avatarUrl || service.logo} alt="" /></div>
+          <div className="account-name"><h2>{account.name}</h2><p>{service.name}</p></div>
+        </div>
+        <div className="primary wide">Open {service.shortName}</div>
       </article>
     </div>
   )
@@ -1311,7 +1383,7 @@ function FlowShell({
       height: rect.height,
     })
       .then(() => {
-        if (!cancelled) setStatus(`${service.name} ready`)
+        if (!cancelled) setStatus(`${service.name} workspace`)
         containerRef.current?.dispatchEvent(new Event("flowpilot-webview-ready"))
       })
       .catch((error) => {
@@ -1354,7 +1426,7 @@ function FlowShell({
         width: rect.width,
         height: rect.height,
       })
-      setStatus(`${service.name} ready`)
+      setStatus(`${service.name} workspace`)
     } catch (error) {
       console.error(`${service.name} WebView failed`, error)
       setStatus(`Unable to open ${service.name}. Please try again.`)
@@ -1367,7 +1439,7 @@ function FlowShell({
       if (bookmarkManagerOpen) await showWebview()
       setStatus(`Opening ${name}...`)
       await invoke("navigate_google_flow", { accountId: account.id, url })
-      setStatus(`${name} ready`)
+      setStatus(`Opened ${name}`)
     } catch (error) {
       console.error("Google Flow bookmark failed", error)
       setStatus(`Unable to open ${name}. Please check the bookmark URL.`)
@@ -1408,31 +1480,20 @@ function FlowShell({
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [bookmarkManagerOpen, fullView, onToggleFullView])
   return (
-    <div className={`flow-shell ${navigatorOpen ? "navigator-open" : ""} ${serviceId === "flow" ? "has-bookmarks" : ""}`}>
+    <div className={`flow-shell ${serviceId === "flow" ? "has-bookmarks" : ""}`}>
       <div className="flow-bar">
         <button className="back" onClick={onBack}>‹ Accounts</button>
-        <span>{status}</span>
+        <span className="flow-status" role="status">{status}</span>
         <div className="flow-controls">
           <div className="mini-navigator">
-            <button className="navigator-trigger" onClick={onToggleNavigator} aria-expanded={navigatorOpen}>
-              <img src={account.avatarUrl || service.logo} alt="" />
-              <span>{account.name}</span>
-              <span aria-hidden="true">▾</span>
-            </button>
-            {navigatorOpen && (
-              <div className="navigator-menu">
-                {accounts.map((candidate) => (
-                  <button
-                    key={candidate.id}
-                    className={candidate.id === account.id ? "selected" : ""}
-                    onClick={() => onSelectAccount(candidate)}
-                  >
-                    <img src={candidate.avatarUrl || SERVICES[serviceOf(candidate)].logo} alt="" />
-                    <span>{candidate.name}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+            <img src={account.avatarUrl || service.logo} alt="" />
+            <select className="navigator-trigger" aria-label="Active account" value={account.id}
+              onChange={(event) => {
+                const selected = accounts.find((candidate) => candidate.id === event.target.value)
+                if (selected) onSelectAccount(selected)
+              }}>
+              {accounts.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
+            </select>
           </div>
           <button className="fullscreen" onClick={onToggleFullView}>
             {fullView ? "Exit Full View" : "Full View"}
