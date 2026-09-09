@@ -5,6 +5,7 @@ mod account_store;
 mod license_store;
 mod webview_manager;
 mod native_downloads;
+mod download_settings;
 mod webview_download_bridge;
 mod dialog_thread_experiment;
 #[cfg(all(windows, feature = "diag"))]
@@ -190,6 +191,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             expand_main_window,
             open_external_url,
+            download_settings::get_download_folder,
+            download_settings::choose_download_folder,
+            download_settings::open_download_folder,
             open_google_flow,
             prepare_workspace,
             preload_workspace,

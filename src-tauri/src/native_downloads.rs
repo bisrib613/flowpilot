@@ -19,8 +19,7 @@ fn filename(suggested: &Path, suffix: &str) -> String {
 }
 
 fn destination<R: Runtime>(webview: &Webview<R>, suggested: &Path) -> Result<PathBuf, String> {
-    let folder = webview.app_handle().path().download_dir().map_err(|e| e.to_string())?.join("Flowpilot");
-    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let folder = crate::download_settings::folder(webview.app_handle())?;
     // Unique names also prevent simultaneous downloads from overwriting each other.
     Ok(folder.join(filename(suggested, &uuid::Uuid::new_v4().to_string())))
 }
@@ -45,7 +44,7 @@ pub fn handle<R: Runtime>(webview: Webview<R>, event: DownloadEvent<'_>) -> bool
             }
         }
         DownloadEvent::Finished { path, success, .. } => {
-            let location = path.map(|p| p.display().to_string()).unwrap_or_else(|| "Downloads / Flowpilot".into());
+            let location = path.map(|p| p.display().to_string()).unwrap_or_else(|| "the configured download folder".into());
             notify(&webview, if success { format!("Downloaded: {location}") } else { format!("Download failed or was cancelled: {location}") });
             true
         }
