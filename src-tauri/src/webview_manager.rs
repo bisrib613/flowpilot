@@ -366,7 +366,6 @@ fn open_view<R: Runtime>(
     }
 
     let storage_key = session_key(app, &service, &account_id)?;
-    let shared_session = storage_key != key;
     let profile = profile_path(app, &storage_key)?;
     let url = WebviewUrl::External(
         service_url(&service)?
@@ -379,10 +378,10 @@ fn open_view<R: Runtime>(
     let builder = WebviewBuilder::new(requested_label.clone(), url)
         .focused(!background)
         .data_directory(profile)
-        .initialization_script_for_all_frames(crate::webview_download_bridge::INIT_SCRIPT)
-        .on_navigation(|url| url.scheme() == "https")
+        .on_download(crate::native_downloads::handle)
+        .on_navigation(|url| url.scheme() == "https" || url.scheme() == "blob")
         .on_new_window(move |url, features| {
-            if shared_session && (url.scheme() == "https" || url.as_str() == "about:blank") {
+            if url.scheme() == "https" || url.scheme() == "blob" || url.as_str() == "about:blank" {
                 // window_features retains the opener environment and OAuth popup relationship.
                 let popup = tauri::WebviewWindowBuilder::new(
                     &popup_app,
@@ -391,9 +390,10 @@ fn open_view<R: Runtime>(
                 )
                 .data_directory(popup_profile.clone())
                 .window_features(features)
-                .title("Sign in")
+                .title("Flowpilot — service window")
+                .on_download(crate::native_downloads::handle)
                 .inner_size(520.0, 720.0)
-                .on_navigation(|url| url.scheme() == "https" || url.as_str() == "about:blank")
+                .on_navigation(|url| url.scheme() == "https" || url.scheme() == "blob" || url.as_str() == "about:blank")
                 .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
                 .build();
                 match popup {

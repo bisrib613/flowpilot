@@ -170,3 +170,7 @@ button:disabled { cursor: default; opacity: .45; }
 .workspace-error { padding: 28px; max-width: 720px; color: var(--text); }
 .workspace-error h2 { font-size: 18px; }
 .workspace-error p { color: var(--muted); overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.6; user-select: text; }
+
+.download-notice { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 10px 18px; background: #172b44; color: var(--text); border-bottom: 1px solid var(--line); font-size: 12px; }
+.download-notice span { flex: 1; min-width: 0; overflow-wrap: anywhere; user-select: text; }
+.download-notice button { flex: 0 0 28px; min-height: 28px; background: transparent; color: var(--text); font-size: 18px; }
