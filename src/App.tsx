@@ -699,6 +699,7 @@ export default function App() {
             {["general", "updates", "license", "help"].map((tab) => <button key={tab} className={settingsTab === tab ? "active" : ""} aria-pressed={settingsTab === tab} onClick={() => setSettingsTab(tab)}>{tab === "help" ? "Help & info" : tab[0].toUpperCase() + tab.slice(1)}</button>)}
           </nav>
           {settingsTab === "general" ? <>
+          <DownloadSettings />
           <section className="preload-setting">
             <div><h2>Account preload</h2><p>Keep up to this many accounts ready on each side of the current profile, per service. More accounts use more memory.</p></div>
             <label htmlFor="preload-sides">Accounts per side</label>
@@ -1343,6 +1344,47 @@ function Settings({
     </div>
   )
 }
+function DownloadSettings() {
+  const [folder, setFolder] = useState("")
+  const [busy, setBusy] = useState(true)
+  const [error, setError] = useState("")
+  useEffect(() => {
+    let disposed = false
+    void invoke<string>("get_download_folder").then((path) => { if (!disposed) setFolder(path) })
+      .catch((reason) => { if (!disposed) setError(String(reason)) })
+      .finally(() => { if (!disposed) setBusy(false) })
+    return () => { disposed = true }
+  }, [])
+  const changeFolder = async () => {
+    setBusy(true)
+    setError("")
+    try {
+      const selected = await invoke<string | null>("choose_download_folder")
+      if (selected) setFolder(selected)
+    } catch (reason) { setError(String(reason)) }
+    finally { setBusy(false) }
+  }
+  const openFolder = async () => {
+    setBusy(true)
+    setError("")
+    try { await invoke("open_download_folder") }
+    catch (reason) { setError(String(reason)) }
+    finally { setBusy(false) }
+  }
+  return <section className="preload-setting download-settings">
+    <h2>Downloads</h2>
+    <p>Files from all services save directly to this folder. No Save As dialog for each download.</p>
+    <label htmlFor="download-folder">Download folder</label>
+    <input id="download-folder" readOnly value={folder} placeholder={busy ? "Loading..." : "Choose a folder"} />
+    <div className="download-folder-actions">
+      <button className="secondary" disabled={busy} onClick={() => void changeFolder()}>Change folder</button>
+      <button className="secondary" disabled={busy || !folder} onClick={() => void openFolder()}>Open folder</button>
+    </div>
+    <p>Changes apply to new downloads. Files already downloaded or currently downloading stay in their original location.</p>
+    {error && <p className="dialog-error" role="alert">{error}</p>}
+  </section>
+}
+
 function DownloadNotice({ message, onDismiss }: { message: string; onDismiss: () => void }) {
   if (!message) return null
   return <div className="download-notice" role="status"><span>{message}</span><button aria-label="Dismiss download status" onClick={onDismiss}>×</button></div>

@@ -4,6 +4,9 @@ fn main() {
             tauri_build::AppManifest::new().commands(&[
                 "expand_main_window",
                 "open_external_url",
+                "get_download_folder",
+                "choose_download_folder",
+                "open_download_folder",
                 "open_google_flow",
                 "prepare_workspace",
                 "preload_workspace",
