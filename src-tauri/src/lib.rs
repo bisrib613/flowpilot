@@ -4,6 +4,7 @@ use tauri::Manager;
 mod account_store;
 mod license_store;
 mod webview_manager;
+mod native_downloads;
 mod webview_download_bridge;
 mod dialog_thread_experiment;
 #[cfg(all(windows, feature = "diag"))]

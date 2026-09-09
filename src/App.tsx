@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react"
 import { getVersion } from "@tauri-apps/api/app"
 import { getCurrentWindow } from "@tauri-apps/api/window"
+import { listen } from "@tauri-apps/api/event"
 import { invoke } from "@tauri-apps/api/core"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
@@ -130,6 +131,16 @@ const starter: Account[] = [
 ]
 
 export default function App() {
+  const [downloadNotice, setDownloadNotice] = useState("")
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void listen<string>("flowpilot-download", (event) => setDownloadNotice(event.payload)).then((stop) => {
+      if (disposed) stop()
+      else unlisten = stop
+    }).catch((error) => console.error("Download status listener failed", error))
+    return () => { disposed = true; unlisten?.() }
+  }, [])
   const [licensed, setLicensed] = useState(true)
   const [licenseChecking, setLicenseChecking] = useState(false)
   const [licenseError, setLicenseError] = useState("")
@@ -560,6 +571,8 @@ export default function App() {
         {!fullView && <Sidebar view="flow" setView={setView} profile={profile} licenseState={licenseState} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />}
         <main className="content flow-content">
           <FlowShell
+            downloadNotice={downloadNotice}
+            onDismissDownload={() => setDownloadNotice("")}
             account={active}
             preloadSides={preloadSides}
             onClosed={() => { setActive(null); setFullView(false); setView("accounts") }}
@@ -610,6 +623,7 @@ export default function App() {
     <div className="app">
       <Sidebar view={view} setView={setView} profile={profile} licenseState={licenseState} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />
       <main className={`content ${view === "accounts" || view === "favorites" ? "accounts-page" : ""}`}>
+        <DownloadNotice message={downloadNotice} onDismiss={() => setDownloadNotice("")} />
         <header>
           <div>
             <div className="eyebrow page-eyebrow" aria-hidden="true">
@@ -1329,7 +1343,13 @@ function Settings({
     </div>
   )
 }
+function DownloadNotice({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  if (!message) return null
+  return <div className="download-notice" role="status"><span>{message}</span><button aria-label="Dismiss download status" onClick={onDismiss}>×</button></div>
+}
+
 function FlowShell({
+  downloadNotice, onDismissDownload,
   preloadSides, onClosed,
   account,
   accounts,
@@ -1343,6 +1363,8 @@ function FlowShell({
   onDeleteBookmark,
   onBack,
 }: {
+  downloadNotice: string
+  onDismissDownload: () => void
   preloadSides: number
   onClosed: () => void
   account: Account
@@ -1552,6 +1574,7 @@ function FlowShell({
           </button>
         </div>
       </div>
+      <DownloadNotice message={downloadNotice} onDismiss={onDismissDownload} />
       <nav className="account-shortcuts" aria-label="Account shortcuts">
         <button className="shortcut-more" disabled={shortcutStart === 0 || closing} onClick={() => { revealShortcuts.current = "before"; setMoreBefore((value) => value + 5) }}>Oldest more</button>
         <div className="shortcut-list" ref={shortcutListRef}>
