@@ -1360,6 +1360,7 @@ function FlowShell({
   const serviceId = serviceOf(account)
   const service = SERVICES[serviceId]
   const [status, setStatus] = useState(`Loading ${service.name}...`)
+  const [openError, setOpenError] = useState("")
   const [bookmarkManagerOpen, setBookmarkManagerOpen] = useState(false)
   const [bookmarkName, setBookmarkName] = useState("")
   const [bookmarkUrl, setBookmarkUrl] = useState("")
@@ -1397,6 +1398,7 @@ function FlowShell({
     setBookmarkError("")
     let cancelled = false
     stopped.current = false
+    setOpenError("")
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
     invoke<number>("prepare_workspace", {
@@ -1425,7 +1427,10 @@ function FlowShell({
       })
       .catch((error) => {
         console.error(`${service.name} WebView failed`, error)
-        if (!cancelled) setStatus(`Unable to open ${service.name}. Please try again.`)
+        if (!cancelled) {
+          setStatus(`Unable to open ${service.name}`)
+          setOpenError(String(error))
+        }
       })
     return () => {
       cancelled = true
@@ -1465,6 +1470,7 @@ function FlowShell({
     if (!rect) return
     setBookmarkManagerOpen(false)
     setStatus(`Loading ${service.name}...`)
+    setOpenError("")
     try {
       await invoke("open_google_flow", {
         accountId: account.id,
@@ -1477,7 +1483,8 @@ function FlowShell({
       setStatus(`${service.name} workspace`)
     } catch (error) {
       console.error(`${service.name} WebView failed`, error)
-      setStatus(`Unable to open ${service.name}. Please try again.`)
+      setStatus(`Unable to open ${service.name}`)
+      setOpenError(String(error))
     }
   }
   const navigateFlow = async (url: string, name: string) => {
@@ -1583,6 +1590,7 @@ function FlowShell({
         </nav>
       )}
       <div ref={containerRef} className="webview-host" aria-label={`${service.name} WebView`}>
+        {openError && <div className="workspace-error" role="alert"><h2>Unable to open {service.name}</h2><p>{openError}</p><button className="secondary" onClick={onBack}>Back to accounts</button></div>}
         {bookmarkManagerOpen && serviceId === "flow" && (
           <section className="bookmark-manager" aria-labelledby="bookmark-manager-title">
             <div className="bookmark-manager-heading">
