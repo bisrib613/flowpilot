@@ -98,14 +98,15 @@ async fn resize_google_flow(
 }
 
 #[tauri::command]
-async fn navigate_google_flow(
+async fn navigate_service_bookmark(
     app: tauri::AppHandle,
     account_id: String,
+    service: String,
     url: String,
 ) -> Result<(), String> {
     let operation_app = app.clone();
     run_on_ui_thread(&app, move || {
-        webview_manager::navigate_flow_bookmark(&operation_app, account_id, url)
+        webview_manager::navigate_service_bookmark(&operation_app, account_id, service, url)
     })
     .await
 }
@@ -200,7 +201,7 @@ pub fn run() {
             close_workspaces,
             close_google_flow,
             resize_google_flow,
-            navigate_google_flow,
+            navigate_service_bookmark,
             remove_google_flow_account,
             clear_google_flow_cache,
             webview_download_bridge::begin_blob_download,

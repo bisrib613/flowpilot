@@ -500,25 +500,37 @@ pub fn close_workspaces<R: Runtime>(app: &AppHandle<R>, service: Option<String>)
     destroy_views(app, service.as_deref(), &[])
 }
 
-pub fn navigate_flow_bookmark<R: Runtime>(
-    app: &AppHandle<R>,
-    account_id: String,
-    url: String,
-) -> Result<(), String> {
+fn parse_bookmark_url(service: &str, url: &str) -> Result<tauri::Url, String> {
     let parsed: tauri::Url = url
         .parse()
-        .map_err(|_| "invalid Google Flow bookmark URL".to_string())?;
-    if parsed.scheme() != "https"
-        || parsed.host_str() != Some("labs.google")
-        || !(parsed.path() == "/fx/tools/flow"
-            || parsed.path().starts_with("/fx/tools/flow/"))
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-    {
-        return Err("unsupported Google Flow bookmark URL".to_string());
+        .map_err(|_| "invalid bookmark URL".to_string())?;
+    let valid_target = parsed.scheme() == "https"
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && match service {
+            "flow" => {
+                parsed.host_str() == Some("labs.google")
+                    && (parsed.path() == "/fx/tools/flow"
+                        || parsed.path().starts_with("/fx/tools/flow/"))
+            }
+            "chatgpt" => parsed.host_str() == Some("chatgpt.com"),
+            _ => false,
+        };
+    if valid_target {
+        Ok(parsed)
+    } else {
+        Err(format!("unsupported {service} bookmark URL"))
     }
+}
 
-    let key = profile_key("flow", &account_id)?;
+pub fn navigate_service_bookmark<R: Runtime>(
+    app: &AppHandle<R>,
+    account_id: String,
+    service: String,
+    url: String,
+) -> Result<(), String> {
+    let parsed = parse_bookmark_url(&service, &url)?;
+    let key = profile_key(&service, &account_id)?;
     let state = app.state::<WebviewManager>();
     let _operation = state
         .operation
@@ -530,11 +542,11 @@ pub fn navigate_flow_bookmark<R: Runtime>(
         .map_err(|_| "webview state unavailable")?
         .clone();
     if active_account.as_deref() != Some(key.as_str()) {
-        return Err("Google Flow account is not active".to_string());
+        return Err(format!("{service} account is not active"));
     }
     let webview = app
         .get_webview(&webview_label(&key))
-        .ok_or_else(|| "Google Flow WebView is not open".to_string())?;
+        .ok_or_else(|| format!("{service} WebView is not open"))?;
     webview.navigate(parsed).map_err(|e| e.to_string())?;
     touch_account(&state, &key)
 }
@@ -680,7 +692,17 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
 
 #[cfg(test)]
 mod preload_tests {
-    use super::{cancel_preloads, WebviewManager};
+    use super::{cancel_preloads, parse_bookmark_url, WebviewManager};
+
+    #[test]
+    fn bookmark_urls_are_limited_to_the_active_service_domain() {
+        assert!(parse_bookmark_url("flow", "https://labs.google/fx/tools/flow/project/123").is_ok());
+        assert!(parse_bookmark_url("chatgpt", "https://chatgpt.com/c/123").is_ok());
+        assert!(parse_bookmark_url("flow", "https://chatgpt.com/c/123").is_err());
+        assert!(parse_bookmark_url("chatgpt", "https://labs.google/fx/tools/flow").is_err());
+        assert!(parse_bookmark_url("chatgpt", "https://example.com/").is_err());
+        assert!(parse_bookmark_url("chatgpt", "https://user:pass@chatgpt.com/c/123").is_err());
+    }
 
     #[test]
     fn cancelling_invalidates_queued_preloads_and_clears_targets() {

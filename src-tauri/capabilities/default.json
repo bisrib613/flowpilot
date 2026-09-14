@@ -18,7 +18,7 @@
     "allow-close-workspaces",
     "allow-close-google-flow",
     "allow-resize-google-flow",
-    "allow-navigate-google-flow",
+    "allow-navigate-service-bookmark",
     "allow-remove-google-flow-account",
     "allow-clear-google-flow-cache",
     "allow-get-device-id",
