@@ -426,17 +426,16 @@ export default function App() {
       const hit = candidates.find(({ rect }) =>
         x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
       )
-      if (hit) return { id: hit.element.dataset.accountId || null, after: x > (hit.rect.left + hit.rect.right) / 2 }
-      // Use the nearest card center when the pointer crosses a grid gap or a new row.
+      if (hit) return { id: hit.element.dataset.accountId || null, after: y > (hit.rect.top + hit.rect.bottom) / 2 }
       const nearest = candidates
         .map(({ element, rect }) => ({
           element,
           rect,
-          distance: Math.hypot((rect.left + rect.right) / 2 - x, (rect.top + rect.bottom) / 2 - y),
+          distance: Math.abs((rect.top + rect.bottom) / 2 - y),
         }))
         .sort((a, b) => a.distance - b.distance)[0]
       if (!nearest) return null
-      return { id: nearest.element.dataset.accountId || null, after: x > (nearest.rect.left + nearest.rect.right) / 2 }
+      return { id: nearest.element.dataset.accountId || null, after: y > (nearest.rect.top + nearest.rect.bottom) / 2 }
     }
     const onMove = (event: PointerEvent) => {
       if (dragPointerIdRef.current !== event.pointerId) return
