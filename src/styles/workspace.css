@@ -95,7 +95,8 @@ aside .rule { margin: 16px 0 0; background: #22334d; }
 .bookmark-manager { background: var(--canvas); }
 .bookmark-form .primary { background: var(--accent); color: #081a33; }
 .bookmark-row span, .bookmark-empty { color: var(--muted); }
-.bookmark-form-actions, .bookmark-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.bookmark-form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.bookmark-row > .bookmark-row-actions { display: flex; flex: none; flex-direction: row; align-items: center; justify-content: flex-end; gap: 8px; }
 .bookmark-form-actions .secondary, .bookmark-form-actions .primary { height: 42px; margin: 0; white-space: nowrap; }
 .bookmark-row-actions button { color: var(--muted); }
 .bookmark-row-actions button:hover { background: #213855; color: var(--text); }

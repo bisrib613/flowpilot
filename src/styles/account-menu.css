@@ -30,7 +30,7 @@
 .cache-status span{flex:1}
 .cache-status button{background:transparent;color:#9b9c9e;font-size:18px;line-height:1}
 
-/* Flow-only bookmarks use compact, discrete controls below the account bar. */
+/* Service bookmarks use compact, discrete controls below the account bar. */
 .flow-bookmark-bar{height:38px;display:flex;align-items:center;gap:6px;padding:5px 20px;background:#0d0f10;border-bottom:1px solid #2b3034;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}
 .flow-bookmark,.flow-bookmark-add{height:28px;flex:none;border:1px solid #303438;border-radius:5px;background:#15181a;color:#a2a5a8;font-size:11px;white-space:nowrap;transition:background-color .14s ease,border-color .14s ease,color .14s ease}
 .flow-bookmark{padding:0 10px}
