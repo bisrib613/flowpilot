@@ -11,7 +11,7 @@ fn main() {
                 "prepare_workspace",
                 "preload_workspace",
                 "close_workspaces",
-                "navigate_google_flow",
+                "navigate_service_bookmark",
                 "close_google_flow",
                 "resize_google_flow",
                 "remove_google_flow_account",

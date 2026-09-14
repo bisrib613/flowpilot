@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react"
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react"
 import { getVersion } from "@tauri-apps/api/app"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { listen } from "@tauri-apps/api/event"
@@ -10,7 +10,9 @@ import { neighborIndices, shortcutBounds, readPreloadSides } from "./services/wo
 import { loadAccounts, saveAccounts } from "./services/account-store"
 
 type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt" | "migoo"
-type FlowBookmark = {
+type AppView = "accounts" | "favorites" | "settings" | "flow"
+type BookmarkServiceId = "flow" | "chatgpt"
+type ServiceBookmark = {
   id: string
   name: string
   url: string
@@ -34,28 +36,36 @@ const SERVICES: Record<ServiceId, { name: string; shortName: string; logo: strin
   migoo: { name: "Migoo", shortName: "Migoo", logo: "/migoo-logo.png", url: "https://migoo.ai/home" },
 }
 const serviceOf = (account: Account): ServiceId => account.service || "flow"
-const FLOW_BOOKMARKS_KEY = "flowpilot-flow-bookmarks"
-const isFlowUrl = (value: string) => {
+const BOOKMARK_STORAGE_KEYS: Record<BookmarkServiceId, string> = {
+  flow: "flowpilot-flow-bookmarks",
+  chatgpt: "flowpilot-chatgpt-bookmarks",
+}
+const supportsBookmarks = (service: ServiceId): service is BookmarkServiceId =>
+  service === "flow" || service === "chatgpt"
+const isBookmarkUrl = (service: BookmarkServiceId, value: string) => {
   try {
     const url = new URL(value)
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password
+    ) return false
+    if (service === "chatgpt") return url.hostname === "chatgpt.com"
     return (
-      url.protocol === "https:" &&
       url.hostname === "labs.google" &&
-      (url.pathname === "/fx/tools/flow" || url.pathname.startsWith("/fx/tools/flow/")) &&
-      !url.username &&
-      !url.password
+      (url.pathname === "/fx/tools/flow" || url.pathname.startsWith("/fx/tools/flow/"))
     )
   } catch {
     return false
   }
 }
-const loadFlowBookmarks = (): FlowBookmark[] => {
+const loadBookmarks = (service: BookmarkServiceId): ServiceBookmark[] => {
   try {
-    const stored: unknown = JSON.parse(localStorage.getItem(FLOW_BOOKMARKS_KEY) || "[]")
+    const stored: unknown = JSON.parse(localStorage.getItem(BOOKMARK_STORAGE_KEYS[service]) || "[]")
     if (!Array.isArray(stored)) return []
-    return stored.filter((item): item is FlowBookmark => {
+    return stored.filter((item): item is ServiceBookmark => {
       if (!item || typeof item !== "object") return false
-      const bookmark = item as Partial<FlowBookmark>
+      const bookmark = item as Partial<ServiceBookmark>
       return (
         typeof bookmark.id === "string" &&
         typeof bookmark.name === "string" &&
@@ -63,13 +73,17 @@ const loadFlowBookmarks = (): FlowBookmark[] => {
         bookmark.name.length <= 50 &&
         typeof bookmark.url === "string" &&
         bookmark.url.length <= 2048 &&
-        isFlowUrl(bookmark.url)
+        isBookmarkUrl(service, bookmark.url)
       )
     })
   } catch {
     return []
   }
 }
+const bookmarkUrlExample = (service: BookmarkServiceId) =>
+  service === "flow"
+    ? "https://labs.google/fx/tools/flow/..."
+    : "https://chatgpt.com/..."
 const LICENSE_PURCHASE_URL = "https://tokotelegram.com/toko/flowpilot"
 const TELEGRAM_CHANNEL_URL = ""
 const APP_VERSION = packageJson.version
@@ -148,7 +162,10 @@ export default function App() {
   const [deviceId, setDeviceId] = useState("")
   const [key, setKey] = useState("")
   const [accounts, setAccounts] = useState<Account[]>([])
-  const [flowBookmarks, setFlowBookmarks] = useState<FlowBookmark[]>(loadFlowBookmarks)
+  const [bookmarksByService, setBookmarksByService] = useState<Record<BookmarkServiceId, ServiceBookmark[]>>(() => ({
+    flow: loadBookmarks("flow"),
+    chatgpt: loadBookmarks("chatgpt"),
+  }))
   const [preloadSides, setPreloadSides] = useState(readPreloadSides)
   const [settingsTab, setSettingsTab] = useState("general")
   const [activeService, setActiveService] = useState<ServiceId>("flow")
@@ -167,18 +184,9 @@ export default function App() {
     }
   })
   const [query, setQuery] = useState("")
-  const [view, setView] = useState<
-    | "accounts"
-    | "favorites"
-    | "license"
-    | "updates"
-    | "info"
-    | "settings"
-    | "flow"
-  >("accounts")
+  const [view, setView] = useState<AppView>("accounts")
   const [active, setActive] = useState<Account | null>(null)
   const [fullView, setFullView] = useState(false)
-  const [navigatorOpen, setNavigatorOpen] = useState(false)
   const [dialog, setDialog] = useState<Account | null>(null)
   const [menu, setMenu] = useState<string | null>(null)
   const [cacheNotice, setCacheNotice] = useState("")
@@ -191,10 +199,9 @@ export default function App() {
   const [renamingAccount, setRenamingAccount] = useState<Account | null>(null)
   const [addAccountError, setAddAccountError] = useState("")
   const [draggingId, setDraggingId] = useState<string | null>(null)
-  const [dragPoint, setDragPoint] = useState({ x: 0, y: 0 })
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
   const [dragTargetId, setDragTargetId] = useState<string | null>(null)
-  const [dragPreviewIds, setDragPreviewIds] = useState<string[] | null>(null)
+  const [dragTargetAfter, setDragTargetAfter] = useState(false)
+  const [dragOrderIds, setDragOrderIds] = useState<string[] | null>(null)
   useEffect(() => { void (async () => { try { const id=await invoke<string>("get_device_id"); setDeviceId(id); const saved=await invoke<LicenseState|null>("get_license_state"); if(saved?.status) setLicenseState(saved) } catch(e) { console.warn("License check failed:",e) } })() }, [])
   const dragSourceRef = useRef<HTMLElement | null>(null)
   const dragPointerIdRef = useRef<number | null>(null)
@@ -229,7 +236,6 @@ export default function App() {
       if (active?.id === removing.id) {
         setActive(null)
         setFullView(false)
-        setNavigatorOpen(false)
         setView("accounts")
       }
       setDialog(null)
@@ -341,23 +347,22 @@ export default function App() {
   }, [accounts, licensed, accountsLoaded])
   useEffect(() => {
     try {
-      localStorage.setItem(FLOW_BOOKMARKS_KEY, JSON.stringify(flowBookmarks))
+      localStorage.setItem(BOOKMARK_STORAGE_KEYS.flow, JSON.stringify(bookmarksByService.flow))
+      localStorage.setItem(BOOKMARK_STORAGE_KEYS.chatgpt, JSON.stringify(bookmarksByService.chatgpt))
     } catch (error) {
-      console.error("Flow bookmarks could not be saved", error)
+      console.error("Bookmarks could not be saved", error)
     }
-  }, [flowBookmarks])
+  }, [bookmarksByService])
   useEffect(() => {
     const activeStillExists = active !== null && accounts.some((account) => account.id === active.id)
     if (view === "flow" && !activeStillExists) {
       setActive(null)
       setFullView(false)
-      setNavigatorOpen(false)
       setView("accounts")
-    } else if (view !== "flow" && (fullView || navigatorOpen)) {
+    } else if (view !== "flow" && fullView) {
       setFullView(false)
-      setNavigatorOpen(false)
     }
-  }, [active, accounts, view, fullView, navigatorOpen])
+  }, [active, accounts, view, fullView])
   const serviceAccounts = useMemo(
     () => accounts.filter((account) => serviceOf(account) === activeService).sort((a, b) => a.order - b.order),
     [accounts, activeService]
@@ -373,23 +378,32 @@ export default function App() {
     [accounts, serviceAccounts, query, view]
   )
   const displayed = useMemo(() => {
-    if (!dragPreviewIds || view !== "accounts") return visible
+    if (!dragOrderIds || view !== "accounts") return visible
     const byId = new Map(serviceAccounts.map((account) => [account.id, account]))
-    return dragPreviewIds.map((id) => byId.get(id)).filter(Boolean) as Account[]
-  }, [serviceAccounts, dragPreviewIds, view, visible])
+    return dragOrderIds.map((id) => byId.get(id)).filter(Boolean) as Account[]
+  }, [serviceAccounts, dragOrderIds, view, visible])
   const finishPointerDrag = (commit: boolean) => {
     const sourceId = dragSourceIdRef.current
     const targetId = dragTargetIdRef.current
     if (commit && sourceId && targetId && sourceId !== targetId) {
       setAccounts((current) => {
-        const sourceIndex = current.findIndex((a) => a.id === sourceId)
-        const targetIndex = current.findIndex((a) => a.id === targetId)
-        if (sourceIndex < 0 || targetIndex < 0) return current
-        const next = [...current]
-        const [source] = next.splice(sourceIndex, 1)
-        const insertionIndex = next.findIndex((a) => a.id === targetId)
-        next.splice(insertionIndex + (dragInsertAfterRef.current ? 1 : 0), 0, source)
-        return next.map((a, index) => ({ ...a, order: index }))
+        const service = current.find((account) => account.id === sourceId)
+        if (!service) return current
+        const serviceId = serviceOf(service)
+        const ordered = current
+          .filter((account) => serviceOf(account) === serviceId)
+          .sort((a, b) => a.order - b.order)
+        const sourceIndex = ordered.findIndex((account) => account.id === sourceId)
+        if (sourceIndex < 0 || !ordered.some((account) => account.id === targetId)) return current
+        const [moved] = ordered.splice(sourceIndex, 1)
+        const targetIndex = ordered.findIndex((account) => account.id === targetId)
+        ordered.splice(targetIndex + (dragInsertAfterRef.current ? 1 : 0), 0, moved)
+        const orderById = new Map(ordered.map((account, index) => [account.id, index]))
+        return current.map((account) =>
+          serviceOf(account) === serviceId
+            ? { ...account, order: orderById.get(account.id) ?? account.order }
+            : account
+        )
       })
     }
     if (dragSourceRef.current && dragPointerIdRef.current !== null) {
@@ -401,7 +415,8 @@ export default function App() {
     dragTargetIdRef.current = null
     setDraggingId(null)
     setDragTargetId(null)
-    setDragPreviewIds(null)
+    setDragTargetAfter(false)
+    setDragOrderIds(null)
   }
   useEffect(() => {
     const accountAtPoint = (x: number, y: number) => {
@@ -411,29 +426,28 @@ export default function App() {
       const hit = candidates.find(({ rect }) =>
         x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
       )
-      if (hit) return { id: hit.element.dataset.accountId || null, after: x > (hit.rect.left + hit.rect.right) / 2 }
-      // Use the nearest card center when the pointer crosses a grid gap or a new row.
+      if (hit) return { id: hit.element.dataset.accountId || null, after: y > (hit.rect.top + hit.rect.bottom) / 2 }
       const nearest = candidates
         .map(({ element, rect }) => ({
           element,
           rect,
-          distance: Math.hypot((rect.left + rect.right) / 2 - x, (rect.top + rect.bottom) / 2 - y),
+          distance: Math.abs((rect.top + rect.bottom) / 2 - y),
         }))
         .sort((a, b) => a.distance - b.distance)[0]
       if (!nearest) return null
-      return { id: nearest.element.dataset.accountId || null, after: x > (nearest.rect.left + nearest.rect.right) / 2 }
+      return { id: nearest.element.dataset.accountId || null, after: y > (nearest.rect.top + nearest.rect.bottom) / 2 }
     }
     const onMove = (event: PointerEvent) => {
       if (dragPointerIdRef.current !== event.pointerId) return
       event.preventDefault()
-      setDragPoint({ x: event.clientX, y: event.clientY })
       const hit = accountAtPoint(event.clientX, event.clientY)
       const targetId = hit?.id || null
       dragInsertAfterRef.current = hit?.after || false
       dragTargetIdRef.current = targetId
       setDragTargetId(targetId)
-      if (targetId) setDragPreviewIds((current) => {
-        const ids = current || accounts.map((a) => a.id)
+      setDragTargetAfter(hit?.after || false)
+      if (targetId) setDragOrderIds((current) => {
+        const ids = current || serviceAccounts.map((account) => account.id)
         const from = ids.indexOf(dragSourceIdRef.current || "")
         const to = ids.indexOf(targetId)
         if (from < 0 || to < 0 || from === to) return ids
@@ -458,11 +472,9 @@ export default function App() {
       window.removeEventListener("pointerup", onUp)
       window.removeEventListener("pointercancel", onCancel)
     }
-  }, [accounts])
-  const beginPointerDrag = (id: string, event: React.PointerEvent<HTMLElement>) => {
+  }, [accounts, serviceAccounts])
+  const beginPointerDrag = (id: string, event: React.PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0 || view !== "accounts" || query.trim()) return
-    if ((event.target as HTMLElement).closest("button, a, input, textarea, select")) return
-    const rect = event.currentTarget.getBoundingClientRect()
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
     dragSourceRef.current = event.currentTarget
@@ -472,9 +484,8 @@ export default function App() {
     dragInsertAfterRef.current = false
     setDraggingId(id)
     setDragTargetId(null)
-    setDragPreviewIds(accounts.map((a) => a.id))
-    setDragOffset({ x: event.clientX - rect.left, y: event.clientY - rect.top })
-    setDragPoint({ x: event.clientX, y: event.clientY })
+    setDragTargetAfter(false)
+    setDragOrderIds(serviceAccounts.map((account) => account.id))
   }
   const activateLicense = async () => {
     if (!key.trim() || !deviceId) { setLicenseError("Invalid License"); return }
@@ -577,42 +588,51 @@ export default function App() {
             preloadSides={preloadSides}
             onClosed={() => { setActive(null); setFullView(false); setView("accounts") }}
             accounts={serviceAccounts}
-            bookmarks={flowBookmarks}
+            bookmarks={
+              supportsBookmarks(serviceOf(active))
+                ? bookmarksByService[serviceOf(active) as BookmarkServiceId]
+                : []
+            }
             fullView={fullView}
-            navigatorOpen={navigatorOpen}
-            onToggleFullView={() => {
-              setNavigatorOpen(false)
-              setFullView((current) => !current)
-            }}
-            onToggleNavigator={() => setNavigatorOpen((current) => !current)}
+            onToggleFullView={() => setFullView((current) => !current)}
             onSelectAccount={(account) => {
-              setNavigatorOpen(false)
               if (account.id !== active.id) setActive(account)
             }}
-            onAddBookmark={(name, url) => {
+            onSaveBookmark={(id, name, url) => {
+              const bookmarkService = serviceOf(active)
+              if (!supportsBookmarks(bookmarkService)) return "Bookmarks are not available for this service."
               const cleanName = name.trim()
               const cleanUrl = url.trim()
               if (!cleanName) return "Enter a bookmark name."
               if (cleanName.length > 50) return "Bookmark name must be 50 characters or fewer."
-              if (cleanUrl.length > 2048 || !isFlowUrl(cleanUrl)) {
-                return "Enter a valid Google Flow URL starting with https://labs.google/fx/tools/flow."
+              if (cleanUrl.length > 2048 || !isBookmarkUrl(bookmarkService, cleanUrl)) {
+                return `Enter a valid ${SERVICES[bookmarkService].name} URL starting with ${bookmarkUrlExample(bookmarkService)}`
               }
-              if (flowBookmarks.some((bookmark) => bookmark.url === cleanUrl)) {
-                return "That Google Flow URL is already bookmarked."
+              const serviceBookmarks = bookmarksByService[bookmarkService]
+              if (serviceBookmarks.some((bookmark) => bookmark.id !== id && bookmark.url === cleanUrl)) {
+                return `That ${SERVICES[bookmarkService].shortName} URL is already bookmarked.`
               }
-              setFlowBookmarks((current) => [
+              setBookmarksByService((current) => ({
                 ...current,
-                { id: crypto.randomUUID(), name: cleanName, url: cleanUrl },
-              ])
+                [bookmarkService]: id
+                  ? current[bookmarkService].map((bookmark) =>
+                      bookmark.id === id ? { ...bookmark, name: cleanName, url: cleanUrl } : bookmark
+                    )
+                  : [...current[bookmarkService], { id: crypto.randomUUID(), name: cleanName, url: cleanUrl }],
+              }))
               return null
             }}
             onDeleteBookmark={(id) => {
-              setFlowBookmarks((current) => current.filter((bookmark) => bookmark.id !== id))
+              const bookmarkService = serviceOf(active)
+              if (!supportsBookmarks(bookmarkService)) return
+              setBookmarksByService((current) => ({
+                ...current,
+                [bookmarkService]: current[bookmarkService].filter((bookmark) => bookmark.id !== id),
+              }))
             }}
             onBack={() => {
               void invoke("close_google_flow", { accountId: active.id, service: serviceOf(active) })
               setFullView(false)
-              setNavigatorOpen(false)
               setView("accounts")
             }}
           />
@@ -639,12 +659,6 @@ export default function App() {
                 ? "Settings"
                 : view === "favorites"
                 ? "Favorite Accounts"
-                : view === "license"
-                ? "License"
-                : view === "updates"
-                ? "Updates"
-                : view === "info"
-                ? "How to Use Flowpilot"
                 : SERVICES[activeService].name}
             </h1>
             <p>
@@ -652,12 +666,6 @@ export default function App() {
                 ? "Keep Flowpilot personal, private, and ready to use."
                 : view === "favorites"
                 ? "Your favorite accounts across all services."
-                : view === "license"
-                ? "Choose the Flowpilot license that fits your needs."
-                : view === "updates"
-                ? "Keep Flowpilot up to date with the latest version."
-                : view === "info"
-                ? "A quick guide to managing your AI workspaces."
                 : `Manage your ${SERVICES[activeService].name} accounts in one place.`}
             </p>
             {view === "accounts" && (
@@ -717,12 +725,6 @@ export default function App() {
           />
           </> : settingsTab === "updates" ? <UpdatesPage /> : settingsTab === "license" ? <LicensePage licenseState={licenseState} onBuy={() => void openLicensePurchase()} /> : <InfoPage />}
           </>
-        ) : view === "license" ? (
-          <LicensePage licenseState={licenseState} onBuy={() => void openLicensePurchase()} />
-        ) : view === "updates" ? (
-          <UpdatesPage />
-        ) : view === "info" ? (
-          <InfoPage />
         ) : (
           <>
             {!accountsLoaded && <p className="account-empty" role="status">Loading accounts...</p>}
@@ -751,13 +753,16 @@ export default function App() {
                   cacheBusy={clearingCacheId === a.id || clearingAllCaches}
                   dragEnabled={view === "accounts" && !query.trim()}
                   isDragging={draggingId === a.id}
-                  isDropTarget={dragTargetId === a.id}
+                  dropPosition={
+                    dragTargetId === a.id
+                      ? dragTargetAfter ? "after" : "before"
+                      : null
+                  }
                   onPointerDown={(event) => beginPointerDrag(a.id, event)}
                 />
               ))}
 
             </div>
-            {draggingId && <DragPreview account={accounts.find((a) => a.id === draggingId) || null} point={dragPoint} offset={dragOffset} />}
           </>
         )}
         {dialog && (
@@ -855,8 +860,8 @@ function Sidebar({
   accounts: Account[]
   activeService: ServiceId
   onService: (service: ServiceId) => void
-  view: string
-  setView: (v: any) => void
+  view: AppView
+  setView: (view: AppView) => void
   profile: { name: string; avatar: string | null }
   licenseState: LicenseState | null
 }) {
@@ -898,14 +903,10 @@ function Sidebar({
     </aside>
   )
 }
-function SidebarIcon({ name }: { name: "accounts" | "favorites" | "license" | "updates" | "info" | "settings" }) {
+function SidebarIcon({ name }: { name: "favorites" | "settings" }) {
   const common = { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true }
   const paths = {
-    accounts: <><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></>,
     favorites: <path d="m12 4 2.5 5.1 5.6.8-4 4 1 5.6-5.1-2.7-5.1 2.7 1-5.6-4-4 5.6-.8L12 4Z" />,
-    license: <><path d="M7 4h10l2 3v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7l2-3Z" /><path d="M9 4v4h6V4M9 13h6M9 17h4" /></>,
-    updates: <><path d="M20 11a8 8 0 0 0-14.7-4L4 9" /><path d="M4 4v5h5M4 13a8 8 0 0 0 14.7 4L20 15" /><path d="M20 20v-5h-5" /></>,
-    info: <><circle cx="12" cy="12" r="8.5" /><path d="M12 11v5M12 8h.01" /></>,
     settings: <><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="9" cy="6" r="1.8" fill="currentColor" stroke="none" /><circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none" /><circle cx="9" cy="18" r="1.8" fill="currentColor" stroke="none" /></>,
   }
   return <svg className="sidebar-icon" {...common}>{paths[name]}</svg>
@@ -1059,23 +1060,23 @@ function InfoPage() {
     ],
     [
       "Add an Account",
-      "Click + Add Account to add another Google Flow account.",
+      "Choose a service, add a profile, then sign in directly inside that service.",
     ],
     [
-      "Sign In to Google Flow",
-      "Sign in directly through Google Flow. Flowpilot does not ask for or store your Google password.",
+      "Keep Sessions Separate",
+      "Each normal profile keeps its own local browser session. A linked Google session is optional.",
     ],
     [
       "Manage Your Accounts",
-      "Use Account Cards to open, rename, favorite, remove, and reorder your Google Flow accounts.",
-    ],
-    [
-      "Open Google Flow",
-      "Click Open Google Flow to open the selected account.",
+      "Open, rename, favorite, remove, or reorder profiles from the account list.",
     ],
     [
       "Switch Between Accounts",
-      "Use the mini navigation while Google Flow is open to quickly switch between your accounts.",
+      "Use the account shortcut row above the workspace to switch between nearby profiles.",
+    ],
+    [
+      "Use Service Bookmarks",
+      "Flow and ChatGPT bookmarks provide saved links inside their own workspace.",
     ],
   ]
   return (
@@ -1166,7 +1167,7 @@ function Card({
   cacheBusy,
   dragEnabled,
   isDragging,
-  isDropTarget,
+  dropPosition,
   onPointerDown,
 }: {
   a: Account
@@ -1180,72 +1181,71 @@ function Card({
   cacheBusy: boolean
   dragEnabled: boolean
   isDragging: boolean
-  isDropTarget: boolean
-  onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void
+  dropPosition: "before" | "after" | null
+  onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void
 }) {
   const service = SERVICES[serviceOf(a)]
   return (
-    <article data-account-id={a.id} onPointerDown={onPointerDown} className={`card ${dragEnabled ? "is-draggable" : ""} ${isDragging ? "is-dragging" : ""} ${isDropTarget ? "is-drop-target" : ""}`}>
+    <article
+      data-account-id={a.id}
+      className={`card ${isDragging ? "is-dragging" : ""} ${dropPosition ? `is-drop-${dropPosition}` : ""}`}
+    >
       <div className="card-top">
         <button
-          className={`star ${a.favorite ? "fav" : ""}`}
-          onClick={onFavorite}
-          aria-label={a.favorite ? "Remove from favorites" : "Add to favorites"}
-          aria-pressed={a.favorite}
+          type="button"
+          className="drag-handle"
+          disabled={!dragEnabled}
+          onPointerDown={onPointerDown}
+          aria-label={`Reorder ${a.name}`}
+          title={dragEnabled ? "Drag to reorder" : undefined}
         >
-          {a.favorite ? "★" : "☆"}
+          <span aria-hidden="true">⠿</span>
         </button>
-        <div className="menu-wrap">
-          <button className="more" onClick={onMenu} aria-label={`Options for ${a.name}`} aria-expanded={menuOpen}>
-            •••
+        <div className="card-actions">
+          <button
+            className={`star ${a.favorite ? "fav" : ""}`}
+            onClick={onFavorite}
+            aria-label={a.favorite ? "Remove from favorites" : "Add to favorites"}
+            aria-pressed={a.favorite}
+          >
+            {a.favorite ? "★" : "☆"}
           </button>
-          {menuOpen && (
-            <div className="account-menu">
-              <button onClick={onRename}>Rename</button>
-              <button onClick={onFavorite}>
-                {a.favorite ? "Remove from Favorites" : "Add to Favorites"}
-              </button>
-              <button disabled={cacheBusy} onClick={onClearCache}>
-                {cacheBusy ? "Clearing Cache…" : "Clear Cache"}
-              </button>
-              <div className="menu-rule" />
-              <button className="menu-danger" onClick={onDelete}>
-                Delete Account
-              </button>
-            </div>
-          )}
+          <div className="menu-wrap">
+            <button className="more" onClick={onMenu} aria-label={`Options for ${a.name}`} aria-expanded={menuOpen}>
+              •••
+            </button>
+            {menuOpen && (
+              <div className="account-menu">
+                <button onClick={onRename}>Rename</button>
+                <button onClick={onFavorite}>
+                  {a.favorite ? "Remove from Favorites" : "Add to Favorites"}
+                </button>
+                <button disabled={cacheBusy} onClick={onClearCache}>
+                  {cacheBusy ? "Clearing Cache…" : "Clear Cache"}
+                </button>
+                <div className="menu-rule" />
+                <button className="menu-danger" onClick={onDelete}>
+                  Delete Account
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
       <div className="account-identity">
-      <div className="avatar large">
-        <img
-          src={a.avatarUrl || service.logo}
-          alt={`${service.name} account`}
-          draggable={false}
-        />
-      </div>
-      <div className="account-name"><h2 title={a.name}>{a.name}</h2><p>{service.name}</p></div>
+        <div className="avatar large">
+          <img
+            src={a.avatarUrl || service.logo}
+            alt={`${service.name} account`}
+            draggable={false}
+          />
+        </div>
+        <div className="account-name"><h2 title={a.name}>{a.name}</h2><p>{service.name}</p></div>
       </div>
       <button className="primary wide" onClick={onOpen}>
         Open {service.shortName}
       </button>
     </article>
-  )
-}
-function DragPreview({ account, point, offset }: { account: Account | null; point: { x: number; y: number }; offset: { x: number; y: number } }) {
-  if (!account) return null
-  const service = SERVICES[serviceOf(account)]
-  return (
-    <div className="custom-drag-layer" aria-hidden="true">
-      <article className="drag-preview-card" style={{ transform: `translate3d(${point.x - offset.x}px, ${point.y - offset.y}px, 0) scale(1.04) rotate(2deg)` }}>
-        <div className="card-top"><span className={`star ${account.favorite ? "fav" : ""}`}>{account.favorite ? "★" : "☆"}</span><span className="more">•••</span></div>
-        <div className="account-identity">
-          <div className="avatar large"><img src={account.avatarUrl || service.logo} alt="" /></div>
-          <div className="account-name"><h2>{account.name}</h2><p>{service.name}</p></div>
-        </div>
-        <div className="primary wide">Open {service.shortName}</div>
-      </article>
-    </div>
   )
 }
 function Settings({
@@ -1397,11 +1397,9 @@ function FlowShell({
   accounts,
   bookmarks,
   fullView,
-  navigatorOpen,
   onToggleFullView,
-  onToggleNavigator,
   onSelectAccount,
-  onAddBookmark,
+  onSaveBookmark,
   onDeleteBookmark,
   onBack,
 }: {
@@ -1411,24 +1409,25 @@ function FlowShell({
   onClosed: () => void
   account: Account
   accounts: Account[]
-  bookmarks: FlowBookmark[]
+  bookmarks: ServiceBookmark[]
   fullView: boolean
-  navigatorOpen: boolean
   onToggleFullView: () => void
-  onToggleNavigator: () => void
   onSelectAccount: (account: Account) => void
-  onAddBookmark: (name: string, url: string) => string | null
+  onSaveBookmark: (id: string | null, name: string, url: string) => string | null
   onDeleteBookmark: (id: string) => void
   onBack: () => void
 }) {
   const serviceId = serviceOf(account)
   const service = SERVICES[serviceId]
+  const bookmarkService = supportsBookmarks(serviceId) ? serviceId : null
   const [status, setStatus] = useState(`Loading ${service.name}...`)
   const [openError, setOpenError] = useState("")
   const [bookmarkManagerOpen, setBookmarkManagerOpen] = useState(false)
   const [bookmarkName, setBookmarkName] = useState("")
   const [bookmarkUrl, setBookmarkUrl] = useState("")
   const [bookmarkError, setBookmarkError] = useState("")
+  const [editingBookmarkId, setEditingBookmarkId] = useState<string | null>(null)
+  const [bookmarkMenu, setBookmarkMenu] = useState<{ id: string; left: number; top: number } | null>(null)
   const shortcutListRef = useRef<HTMLDivElement>(null)
   const revealShortcuts = useRef<"before" | "after" | null>(null)
   const [moreBefore, setMoreBefore] = useState(0)
@@ -1455,11 +1454,16 @@ function FlowShell({
   const neighborIds = neighborIndices(accounts.length, currentIndex, preloadSides).map((index) => accounts[index].id)
   const neighborKey = neighborIds.join(",")
   const containerRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    setBookmarkManagerOpen(false)
+  const clearBookmarkForm = () => {
+    setEditingBookmarkId(null)
     setBookmarkName("")
     setBookmarkUrl("")
     setBookmarkError("")
+  }
+  useEffect(() => {
+    setBookmarkManagerOpen(false)
+    setBookmarkMenu(null)
+    clearBookmarkForm()
     let cancelled = false
     stopped.current = false
     setOpenError("")
@@ -1517,7 +1521,17 @@ function FlowShell({
       observer.disconnect()
       container.removeEventListener("flowpilot-webview-ready", onReady)
     }
-  }, [navigatorOpen, fullView, account.id, serviceId])
+  }, [fullView, account.id, serviceId])
+  useEffect(() => {
+    if (!bookmarkMenu) return
+    const dismiss = () => setBookmarkMenu(null)
+    window.addEventListener("pointerdown", dismiss)
+    window.addEventListener("resize", dismiss)
+    return () => {
+      window.removeEventListener("pointerdown", dismiss)
+      window.removeEventListener("resize", dismiss)
+    }
+  }, [bookmarkMenu])
   const closeWorkspaces = async (all: boolean) => {
     stopped.current = true
     setClosing(true)
@@ -1533,6 +1547,8 @@ function FlowShell({
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
     setBookmarkManagerOpen(false)
+    setBookmarkMenu(null)
+    clearBookmarkForm()
     setStatus(`Loading ${service.name}...`)
     setOpenError("")
     try {
@@ -1551,45 +1567,77 @@ function FlowShell({
       setOpenError(String(error))
     }
   }
-  const navigateFlow = async (url: string, name: string) => {
-    if (serviceId !== "flow") return
+  const navigateBookmark = async (url: string, name: string) => {
+    if (!bookmarkService) return
     try {
-      if (navigatorOpen) onToggleNavigator()
+      setBookmarkMenu(null)
       if (bookmarkManagerOpen) await showWebview()
       setStatus(`Opening ${name}...`)
-      await invoke("navigate_google_flow", { accountId: account.id, url })
+      await invoke("navigate_service_bookmark", { accountId: account.id, service: bookmarkService, url })
       setStatus(`Opened ${name}`)
     } catch (error) {
-      console.error("Google Flow bookmark failed", error)
+      console.error(`${service.name} bookmark failed`, error)
       setStatus(`Unable to open ${name}. Please check the bookmark URL.`)
     }
   }
   const openBookmarkManager = async () => {
+    if (!bookmarkService) return
     try {
-      if (navigatorOpen) onToggleNavigator()
       await invoke("close_google_flow", { accountId: account.id, service: serviceId })
       setBookmarkManagerOpen(true)
-      setBookmarkError("")
-      setStatus("Manage Flow bookmarks")
+      setBookmarkMenu(null)
+      clearBookmarkForm()
+      setStatus(`Manage ${service.shortName} bookmarks`)
     } catch (error) {
       console.error("Unable to open bookmark manager", error)
       setStatus("Unable to open bookmark manager. Please try again.")
     }
   }
   const submitBookmark = () => {
-    const error = onAddBookmark(bookmarkName, bookmarkUrl)
+    const error = onSaveBookmark(editingBookmarkId, bookmarkName, bookmarkUrl)
     if (error) {
       setBookmarkError(error)
       return
     }
-    setBookmarkName("")
-    setBookmarkUrl("")
-    setBookmarkError("")
+    clearBookmarkForm()
+  }
+  const editBookmark = async (bookmark: ServiceBookmark) => {
+    try {
+      if (!bookmarkManagerOpen) {
+        await invoke("close_google_flow", { accountId: account.id, service: serviceId })
+      }
+      setBookmarkManagerOpen(true)
+      setBookmarkMenu(null)
+      setEditingBookmarkId(bookmark.id)
+      setBookmarkName(bookmark.name)
+      setBookmarkUrl(bookmark.url)
+      setBookmarkError("")
+      setStatus(`Edit ${bookmark.name}`)
+    } catch (error) {
+      console.error("Unable to edit bookmark", error)
+      setStatus("Unable to open bookmark editor. Please try again.")
+    }
+  }
+  const removeBookmark = (bookmark: ServiceBookmark) => {
+    setBookmarkMenu(null)
+    if (!window.confirm(`Remove bookmark "${bookmark.name}"?`)) return
+    onDeleteBookmark(bookmark.id)
+    if (editingBookmarkId === bookmark.id) clearBookmarkForm()
+  }
+  const openBookmarkContextMenu = (event: ReactMouseEvent, bookmark: ServiceBookmark) => {
+    event.preventDefault()
+    setBookmarkMenu({
+      id: bookmark.id,
+      left: Math.min(event.clientX, window.innerWidth - 176),
+      top: Math.max(8, event.clientY - 84),
+    })
   }
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return
-      if (bookmarkManagerOpen) {
+      if (bookmarkMenu) {
+        setBookmarkMenu(null)
+      } else if (bookmarkManagerOpen) {
         void showWebview()
       } else if (fullView) {
         onToggleFullView()
@@ -1597,9 +1645,12 @@ function FlowShell({
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [bookmarkManagerOpen, fullView, onToggleFullView])
+  }, [bookmarkMenu, bookmarkManagerOpen, fullView, onToggleFullView])
+  const menuBookmark = bookmarkMenu
+    ? bookmarks.find((bookmark) => bookmark.id === bookmarkMenu.id) || null
+    : null
   return (
-    <div className={`flow-shell ${serviceId === "flow" ? "has-bookmarks" : ""}`}>
+    <div className={`flow-shell ${bookmarkService ? "has-bookmarks" : ""}`}>
       <div className="flow-bar">
         <button className="back" onClick={onBack}>‹ Accounts</button>
         <span className="flow-status" role="status">{status}</span>
@@ -1626,19 +1677,20 @@ function FlowShell({
         </div>
         <button className="shortcut-more" disabled={shortcutEnd === accounts.length || closing} onClick={() => { revealShortcuts.current = "after"; setMoreAfter((value) => value + 5) }}>Latest more</button>
       </nav>
-      {serviceId === "flow" && (
-        <nav className="flow-bookmark-bar" aria-label="Google Flow bookmarks">
-          <button type="button" className="flow-bookmark flow-bookmark-home" onClick={() => void navigateFlow(service.url, "Flow")}>
+      {bookmarkService && (
+        <nav className="flow-bookmark-bar" aria-label={`${service.name} bookmarks`}>
+          <button type="button" className="flow-bookmark flow-bookmark-home" onClick={() => void navigateBookmark(service.url, service.shortName)}>
             <img src={service.logo} alt="" />
-            <span>Flow</span>
+            <span>{service.shortName}</span>
           </button>
           {bookmarks.map((bookmark) => (
             <button
               type="button"
               className="flow-bookmark"
               key={bookmark.id}
-              title={bookmark.url}
-              onClick={() => void navigateFlow(bookmark.url, bookmark.name)}
+              title={`${bookmark.name} — ${bookmark.url}`}
+              onClick={() => void navigateBookmark(bookmark.url, bookmark.name)}
+              onContextMenu={(event) => openBookmarkContextMenu(event, bookmark)}
             >
               {bookmark.name}
             </button>
@@ -1646,52 +1698,71 @@ function FlowShell({
           <button
             type="button"
             className="flow-bookmark-add"
-            title="Manage Flow bookmarks"
-            aria-label="Manage Flow bookmarks"
+            title={`Manage ${service.shortName} bookmarks`}
+            aria-label={`Manage ${service.shortName} bookmarks`}
             onClick={() => void openBookmarkManager()}
           >
             +
           </button>
         </nav>
       )}
+      {menuBookmark && bookmarkMenu && (
+        <div
+          className="bookmark-context-menu"
+          role="menu"
+          style={{ left: bookmarkMenu.left, top: bookmarkMenu.top }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button type="button" role="menuitem" onClick={() => void editBookmark(menuBookmark)}>Edit bookmark</button>
+          <button type="button" role="menuitem" className="danger-item" onClick={() => removeBookmark(menuBookmark)}>Remove bookmark</button>
+        </div>
+      )}
       <div ref={containerRef} className="webview-host" aria-label={`${service.name} WebView`}>
         {openError && <div className="workspace-error" role="alert"><h2>Unable to open {service.name}</h2><p>{openError}</p><button className="secondary" onClick={onBack}>Back to accounts</button></div>}
-        {bookmarkManagerOpen && serviceId === "flow" && (
+        {bookmarkManagerOpen && bookmarkService && (
           <section className="bookmark-manager" aria-labelledby="bookmark-manager-title">
             <div className="bookmark-manager-heading">
               <div>
-                <h2 id="bookmark-manager-title">Flow bookmarks</h2>
-                <p>Add shortcuts for private tools hosted inside Google Flow.</p>
+                <h2 id="bookmark-manager-title">{service.shortName} bookmarks</h2>
+                <p>Add shortcuts for pages you use in {service.name}.</p>
               </div>
               <button type="button" className="bookmark-close" onClick={() => void showWebview()} aria-label="Close bookmark manager">×</button>
             </div>
             <div className="bookmark-form">
               <label>
                 <span>Name</span>
-                <input value={bookmarkName} maxLength={50} onChange={(event) => setBookmarkName(event.target.value)} placeholder="Tool name" />
+                <input value={bookmarkName} maxLength={50} onChange={(event) => setBookmarkName(event.target.value)} placeholder="Bookmark name" />
               </label>
               <label>
-                <span>Google Flow URL</span>
+                <span>{service.shortName} URL</span>
                 <input
                   value={bookmarkUrl}
                   onChange={(event) => setBookmarkUrl(event.target.value)}
                   onKeyDown={(event) => event.key === "Enter" && submitBookmark()}
-                  placeholder="https://labs.google/fx/tools/flow/..."
+                  placeholder={bookmarkUrlExample(bookmarkService)}
                 />
               </label>
-              <button type="button" className="primary" onClick={submitBookmark}>Add bookmark</button>
+              <div className="bookmark-form-actions">
+                {editingBookmarkId && <button type="button" className="secondary" onClick={clearBookmarkForm}>Cancel</button>}
+                <button type="button" className="primary" onClick={submitBookmark}>
+                  {editingBookmarkId ? "Save changes" : "Add bookmark"}
+                </button>
+              </div>
             </div>
             {bookmarkError && <p className="bookmark-error" role="alert">{bookmarkError}</p>}
             <div className="bookmark-list">
               {bookmarks.length === 0 ? (
-                <p className="bookmark-empty">No private tools saved. Add your first Google Flow URL above.</p>
+                <p className="bookmark-empty">No bookmarks saved for {service.shortName}.</p>
               ) : bookmarks.map((bookmark) => (
-                <div className="bookmark-row" key={bookmark.id}>
+                <div className={`bookmark-row ${editingBookmarkId === bookmark.id ? "is-editing" : ""}`} key={bookmark.id}>
                   <div>
                     <strong>{bookmark.name}</strong>
                     <span>{bookmark.url}</span>
                   </div>
-                  <button type="button" onClick={() => onDeleteBookmark(bookmark.id)}>Remove</button>
+                  <div className="bookmark-row-actions">
+                    <button type="button" onClick={() => void editBookmark(bookmark)}>Edit</button>
+                    <button type="button" className="remove" onClick={() => removeBookmark(bookmark)}>Remove</button>
+                  </div>
                 </div>
               ))}
             </div>
