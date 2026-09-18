@@ -18,6 +18,7 @@ use webview2_com::{
 use windows::core::Interface;
 
 const WEBVIEW_LABEL_PREFIX: &str = "flowpilot-service";
+const AUTOMATION_LABEL_PREFIX: &str = "flowpilot-automation";
 
 
 pub struct WebviewManager {
@@ -28,6 +29,7 @@ pub struct WebviewManager {
     operation: Mutex<()>,
     preload_epoch: Mutex<u64>,
     preload_targets: Mutex<Vec<String>>,
+    automation_ports: Mutex<HashMap<String, u16>>,
 }
 
 impl Default for WebviewManager {
@@ -40,6 +42,7 @@ impl Default for WebviewManager {
             operation: Mutex::new(()),
             preload_epoch: Mutex::new(0),
             preload_targets: Mutex::new(Vec::new()),
+            automation_ports: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -156,6 +159,22 @@ fn profile_path<R: Runtime>(app: &AppHandle<R>, profile_key: &str) -> Result<Pat
         return Err("invalid account profile path".to_string());
     }
     Ok(profile)
+}
+
+fn reserve_loopback_port() -> Result<u16, String> {
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .map_err(|error| error.to_string())?;
+    listener.local_addr().map(|address| address.port()).map_err(|error| error.to_string())
+}
+
+fn flow_browser_args(port: u16) -> String {
+    format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={port} --remote-allow-origins=*")
+}
+
+fn flow_builder<R: Runtime>(label: String, url: WebviewUrl, profile: PathBuf, browser_args: &str) -> WebviewBuilder<R> {
+    WebviewBuilder::new(label, url)
+        .data_directory(profile)
+        .additional_browser_args(browser_args)
 }
 
 
@@ -375,15 +394,25 @@ fn open_view<R: Runtime>(
     let popup_app = app.clone();
     let popup_prefix = format!("{requested_label}-popup-");
     let popup_profile = profile.clone();
-    let builder = WebviewBuilder::new(requested_label.clone(), url)
+    let flow_environment = if service == "flow" {
+        let port = reserve_loopback_port()?;
+        Some((port, flow_browser_args(port)))
+    } else {
+        None
+    };
+    let popup_flow_args = flow_environment.as_ref().map(|(_, args)| args.clone());
+    let builder = if let Some((_, browser_args)) = &flow_environment {
+        flow_builder(requested_label.clone(), url, profile, browser_args)
+    } else {
+        WebviewBuilder::new(requested_label.clone(), url).data_directory(profile)
+    }
         .focused(!background)
-        .data_directory(profile)
         .on_download(crate::native_downloads::handle)
         .on_navigation(|url| url.scheme() == "https" || url.scheme() == "blob")
         .on_new_window(move |url, features| {
             if url.scheme() == "https" || url.scheme() == "blob" || url.as_str() == "about:blank" {
                 // window_features retains the opener environment and OAuth popup relationship.
-                let popup = tauri::WebviewWindowBuilder::new(
+                let popup_builder = tauri::WebviewWindowBuilder::new(
                     &popup_app,
                     format!("{}{}", popup_prefix, uuid::Uuid::new_v4()),
                     WebviewUrl::External("about:blank".parse().expect("valid blank URL")),
@@ -394,8 +423,12 @@ fn open_view<R: Runtime>(
                 .on_download(crate::native_downloads::handle)
                 .inner_size(520.0, 720.0)
                 .on_navigation(|url| url.scheme() == "https" || url.scheme() == "blob" || url.as_str() == "about:blank")
-                .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
-                .build();
+                .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
+                let popup = if let Some(browser_args) = &popup_flow_args {
+                    popup_builder.additional_browser_args(browser_args).build()
+                } else {
+                    popup_builder.build()
+                };
                 match popup {
                     Ok(window) => return tauri::webview::NewWindowResponse::Create { window },
                     Err(error) => eprintln!("[flowpilot-webview] sign-in window failed: {error}"),
@@ -410,6 +443,9 @@ fn open_view<R: Runtime>(
             tauri::LogicalSize::new(width, height),
         )
         .map_err(|e| e.to_string())?;
+    if let Some((port, _)) = flow_environment {
+        state.automation_ports.lock().map_err(|_| "webview state unavailable")?.insert(key.clone(), port);
+    }
 
     #[cfg(all(windows, feature = "diag"))]
     if let Some(webview) = app.get_webview(&requested_label) {
@@ -443,6 +479,66 @@ fn open_view<R: Runtime>(
     Ok(())
 }
 
+pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<u16, String> {
+    validate_account_id(&account_id)?;
+    let accounts = crate::account_store::load_accounts(app.clone())?
+        .ok_or_else(|| "FlowPilot has no saved accounts".to_string())?;
+    let is_flow_account = accounts.as_array().is_some_and(|rows| rows.iter().any(|row| {
+        row.get("id").and_then(|value| value.as_str()) == Some(account_id.as_str())
+            && row.get("service").and_then(|value| value.as_str()).unwrap_or("flow") == "flow"
+    }));
+    if !is_flow_account {
+        return Err("The requested Google Flow account does not exist in FlowPilot".to_string());
+    }
+
+    let key = profile_key("flow", &account_id)?;
+    let state = app.state::<WebviewManager>();
+    let profile = profile_path(app, &key)?;
+    let regular_label = webview_label(&key);
+    if let Some(webview) = app.get_webview(&regular_label) {
+        webview.navigate(service_url("flow")?.parse().map_err(|_| "invalid Flow URL")?)
+            .map_err(|error| error.to_string())?;
+        webview.show().map_err(|error| error.to_string())?;
+        touch_account(&state, &key)?;
+        return state.automation_ports.lock().map_err(|_| "webview state unavailable".to_string())?
+            .get(&key).copied()
+            .ok_or_else(|| "The Flow WebView does not have an automation endpoint. Restart FlowPilot.".to_string());
+    }
+
+    let label = format!("{AUTOMATION_LABEL_PREFIX}-{key}");
+    if let Some(window) = app.get_webview_window(&label) {
+        window.navigate(service_url("flow")?.parse().map_err(|_| "invalid Flow URL")?)
+            .map_err(|error| error.to_string())?;
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        touch_account(&state, &key)?;
+        return state.automation_ports.lock().map_err(|_| "webview state unavailable".to_string())?
+            .get(&key).copied()
+            .ok_or_else(|| "The Flow automation window has no registered endpoint. Restart FlowPilot.".to_string());
+    }
+
+    let port = reserve_loopback_port()?;
+    let browser_args = flow_browser_args(port);
+    tauri::WebviewWindowBuilder::new(
+        app,
+        label,
+        WebviewUrl::External(service_url("flow")?.parse().map_err(|_| "invalid Flow URL")?),
+    )
+    .data_directory(profile)
+    .additional_browser_args(&browser_args)
+    .title("FlowPilot — AutoPrompt session")
+    .inner_size(1280.0, 800.0)
+    .visible(true)
+    .focused(true)
+    .on_download(crate::native_downloads::handle)
+    .on_navigation(|url| url.scheme() == "https" || url.scheme() == "blob")
+    .build()
+    .map_err(|error| error.to_string())?;
+    state.automation_ports.lock().map_err(|_| "webview state unavailable")?.insert(key.clone(), port);
+    touch_account(&state, &key)?;
+    Ok(port)
+}
+
 // These operations run on the UI thread. Epochs reject stale queued preload work.
 fn cancel_preloads(state: &WebviewManager) -> Result<u64, String> {
     let mut epoch = state.preload_epoch.lock().map_err(|_| "webview state unavailable")?;
@@ -463,6 +559,7 @@ fn destroy_views<R: Runtime>(app: &AppHandle<R>, service: Option<&str>, keep: &[
         crate::webview_download_bridge::cancel_for_webview(&app.state::<crate::webview_download_bridge::DownloadState>(), &label);
         if let Some(webview) = app.get_webview(&label) { webview.close().map_err(|e| e.to_string())?; }
         state.cached_accounts.lock().map_err(|_| "webview state unavailable")?.remove(&key);
+        state.automation_ports.lock().map_err(|_| "webview state unavailable")?.remove(&key);
         let mut active = state.active_account_id.lock().map_err(|_| "webview state unavailable")?;
         if active.as_deref() == Some(key.as_str()) {
             *active = None;
