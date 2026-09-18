@@ -8,6 +8,7 @@ mod native_downloads;
 mod download_settings;
 mod webview_download_bridge;
 mod dialog_thread_experiment;
+mod automation_bridge;
 #[cfg(all(windows, feature = "diag"))]
 mod webview_diagnostics;
 
@@ -185,6 +186,10 @@ fn expand_main_window(app: tauri::AppHandle) -> Result<(), String> {
 pub fn run() {
     dialog_thread_experiment::init();
     tauri::Builder::default()
+        .setup(|app| {
+            automation_bridge::start(app.handle().clone()).map_err(std::io::Error::other)?;
+            Ok(())
+        })
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(webview_manager::WebviewManager::default())

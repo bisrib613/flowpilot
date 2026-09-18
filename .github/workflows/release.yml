@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to build (for example v1.5.3)
+        description: Release tag to build (for example v1.5.4)
         required: true
-        default: v1.5.3
+        default: v1.5.4
 
 permissions:
   contents: write
@@ -77,11 +77,7 @@ jobs:
         with:
           tagName: ${{ inputs.tag }}
           releaseName: Flowpilot ${{ inputs.tag }}
-          releaseBody: |
-            Added editable bookmarks for Google Flow and ChatGPT.
-            Added right-click bookmark actions for editing and removal.
-            Improved account reordering with a stable drag handle and position indicator.
-            Removed obsolete navigation and drag-preview UI code.
+          releaseBody: Compatibility update.
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
