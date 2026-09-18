@@ -7,12 +7,15 @@ on:
         description: Release tag to build (for example v1.5.4)
         required: true
         default: v1.5.4
+  push:
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]')
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -46,7 +49,7 @@ jobs:
       - name: Set release version
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || 'v1.5.4' }}
         run: |
           $tag = $env:RELEASE_TAG.Trim()
           if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
@@ -75,8 +78,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ inputs.tag }}
-          releaseName: Flowpilot ${{ inputs.tag }}
+          tagName: ${{ inputs.tag || 'v1.5.4' }}
+          releaseName: Flowpilot ${{ inputs.tag || 'v1.5.4' }}
           releaseBody: Compatibility update.
           releaseDraft: false
           prerelease: false
