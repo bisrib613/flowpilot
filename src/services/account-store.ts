@@ -54,16 +54,19 @@ export async function loadAccounts(): Promise<StoredAccount[]> {
     return []
   } catch (error) {
     console.error("Flowpilot account data could not be loaded", error)
-    return []
+    throw error
   }
 }
 
-export async function saveAccounts(accounts: StoredAccount[]) {
-  try {
-    if (!accounts.every(isAccount)) throw new Error("Invalid account data")
+let saveQueue: Promise<void> = Promise.resolve()
+
+export function saveAccounts(accounts: StoredAccount[]): Promise<void> {
+  if (!accounts.every(isAccount)) return Promise.reject(new Error("Invalid account data"))
+  // Preserve write order even when multiple React updates arrive in quick succession.
+  const pending = saveQueue.catch(() => undefined).then(async () => {
     await invoke("save_accounts", { accounts })
     localStorage.removeItem(STORAGE_KEY)
-  } catch (error) {
-    console.error("Flowpilot account data could not be saved", error)
-  }
+  })
+  saveQueue = pending
+  return pending
 }
