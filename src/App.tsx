@@ -83,39 +83,6 @@ const bookmarkUrlExample = (service: BookmarkServiceId) =>
   service === "flow"
     ? "https://labs.google/fx/tools/flow/..."
     : "https://chatgpt.com/..."
-const starter: Account[] = [
-  {
-    id: "main",
-    name: "Flow Main",
-    email: null,
-    avatarUrl: "/google-flow.png",
-    avatar: "YK",
-    favorite: true,
-    order: 0,
-    service: "flow",
-  },
-  {
-    id: "client",
-    name: "Client A",
-    email: null,
-    avatarUrl: "/google-flow.png",
-    avatar: "CA",
-    favorite: false,
-    order: 1,
-    service: "flow",
-  },
-  {
-    id: "backup",
-    name: "Backup",
-    email: null,
-    avatarUrl: "/google-flow.png",
-    avatar: "B",
-    favorite: false,
-    order: 2,
-    service: "flow",
-  },
-]
-
 export default function App() {
   const [downloadNotice, setDownloadNotice] = useState("")
   useEffect(() => {
