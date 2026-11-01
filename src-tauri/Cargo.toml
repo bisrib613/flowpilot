@@ -18,6 +18,7 @@ uuid = { version = "1", features = ["v4"] }
 tauri-plugin-process = "2"
 tauri-plugin-dialog = "2"
 rfd = "0.16"
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38.2"
