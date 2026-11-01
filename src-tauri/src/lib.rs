@@ -149,11 +149,24 @@ async fn clear_google_flow_cache(
 
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
-enum FlowLocation { Landing, Working, GoogleAuth, Unknown }
+enum FlowLocation { Landing, Working, GoogleAuth, VerificationSkipped, Unknown }
 
 fn flow_location(raw: &str) -> FlowLocation {
     let Ok(url) = tauri::Url::parse(raw) else { return FlowLocation::Unknown };
     if url.scheme() != "https" { return FlowLocation::Unknown; }
+    // Skip CAPTCHA and non-password Google verification challenges.
+    // /challenge/pwd is the ordinary password step and must remain permitted.
+    let path = url.path().to_ascii_lowercase();
+    let other_challenge = path.contains("/challenge/") && !path.contains("/challenge/pwd");
+    if (url.host_str() == Some("accounts.google.com") &&
+        (path.contains("recaptcha") || path.contains("captcha") ||
+         path.contains("/sorry") || other_challenge)) {
+        return FlowLocation::VerificationSkipped;
+    }
+    if matches!(url.host_str(), Some("www.google.com" | "google.com")) &&
+        (path.contains("recaptcha") || path.contains("/sorry")) {
+        return FlowLocation::VerificationSkipped;
+    }
     if url.host_str() == Some("accounts.google.com") { return FlowLocation::GoogleAuth; }
     if url.host_str() != Some("flow.google.com") { return FlowLocation::Unknown; }
     match url.path() {
@@ -194,6 +207,7 @@ async fn check_flow_profile(app: tauri::AppHandle, account_id: String) -> Result
                     working_ticks += 1;
                     if working_ticks >= 2 { return Ok("signed_in"); }
                 }
+                FlowLocation::VerificationSkipped => return Ok("verification_skipped"),
                 FlowLocation::Landing => {
                     working_ticks = 0;
                     if !landing_seen {
@@ -236,6 +250,10 @@ mod flow_location_tests {
         assert_eq!(flow_location("https://flow.google.com/"), FlowLocation::Working);
         assert_eq!(flow_location("https://flow.google.com/project/123"), FlowLocation::Working);
         assert_eq!(flow_location("https://accounts.google.com/signin"), FlowLocation::GoogleAuth);
+        assert_eq!(flow_location("https://accounts.google.com/v3/signin/challenge/pwd"), FlowLocation::GoogleAuth);
+        assert_eq!(flow_location("https://accounts.google.com/v3/signin/challenge/totp"), FlowLocation::VerificationSkipped);
+        assert_eq!(flow_location("https://accounts.google.com/recaptcha"), FlowLocation::VerificationSkipped);
+        assert_eq!(flow_location("https://www.google.com/sorry/index"), FlowLocation::VerificationSkipped);
         assert_eq!(flow_location("https://flow.google.com/404?reason=project"), FlowLocation::Unknown);
         assert_eq!(flow_location("https://flow.google.com.evil.invalid/about"), FlowLocation::Unknown);
         assert_eq!(flow_location("http://flow.google.com/about"), FlowLocation::Unknown);
