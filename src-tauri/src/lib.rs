@@ -148,7 +148,7 @@ async fn clear_google_flow_cache(
 }
 
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 enum FlowLocation { Landing, Working, GoogleAuth, Unknown }
 
 fn flow_location(raw: &str) -> FlowLocation {
