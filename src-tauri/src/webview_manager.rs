@@ -51,7 +51,7 @@ impl Default for WebviewManager {
 
 fn service_url(service: &str) -> Result<&'static str, String> {
     match service {
-        "flow" => Ok("https://labs.google/fx/tools/flow"),
+        "flow" => Ok("https://flow.google.com/"),
         "dola" => Ok("https://www.dola.com/"),
         "leonardo" => Ok("https://app.leonardo.ai/"),
         "chatgpt" => Ok("https://chatgpt.com/"),
@@ -577,7 +577,7 @@ pub fn begin_flow_profile_check<R: Runtime>(app: &AppHandle<R>, account_id: Stri
     let accounts = crate::account_store::load_accounts(app.clone())?
         .ok_or_else(|| "Account storage unavailable".to_string())?;
     let exists = accounts.as_array().is_some_and(|rows| rows.iter().any(|row| {
-        row.get("id").and_then(|value| value.as_str()) == Some(&account_id)
+        row.get("id").and_then(|value| value.as_str()) == Some(account_id.as_str())
             && row.get("service").and_then(|value| value.as_str()).unwrap_or("flow") == "flow"
     }));
     if !exists { return Err("Google Flow profile not found".into()); }
@@ -710,9 +710,12 @@ fn parse_bookmark_url(service: &str, url: &str) -> Result<tauri::Url, String> {
         && parsed.password().is_none()
         && match service {
             "flow" => {
-                parsed.host_str() == Some("labs.google")
+                (parsed.host_str() == Some("flow.google.com")
+                    && (parsed.path() == "/" || parsed.path().starts_with("/project/")
+                        || parsed.path().starts_with("/library")))
+                || (parsed.host_str() == Some("labs.google")
                     && (parsed.path() == "/fx/tools/flow"
-                        || parsed.path().starts_with("/fx/tools/flow/"))
+                        || parsed.path().starts_with("/fx/tools/flow/")))
             }
             "chatgpt" => parsed.host_str() == Some("chatgpt.com"),
             _ => false,
@@ -895,6 +898,8 @@ mod preload_tests {
     #[test]
     fn bookmark_urls_are_limited_to_the_active_service_domain() {
         assert!(parse_bookmark_url("flow", "https://labs.google/fx/tools/flow/project/123").is_ok());
+        assert!(parse_bookmark_url("flow", "https://flow.google.com/project/123").is_ok());
+        assert!(parse_bookmark_url("flow", "https://flow.google.com/about").is_err());
         assert!(parse_bookmark_url("chatgpt", "https://chatgpt.com/c/123").is_ok());
         assert!(parse_bookmark_url("flow", "https://chatgpt.com/c/123").is_err());
         assert!(parse_bookmark_url("chatgpt", "https://labs.google/fx/tools/flow").is_err());
