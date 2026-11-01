@@ -49,7 +49,7 @@ fn account_email<R: Runtime>(webview: &Webview<R>, account_id: &str) -> Option<S
 }
 
 pub fn on_page_load<R: Runtime>(
-    webview: Webview<R>,
+    webview: &Webview<R>,
     payload: PageLoadPayload<'_>,
     account_id: &str,
 ) {
