@@ -247,7 +247,7 @@ export default function App() {
     }
     const googleEmail = googleAccountEmail.trim().toLowerCase()
     if ((renamingAccount ? serviceOf(renamingAccount) : activeService) === "flow" && googleEmail &&
-        !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(googleEmail)) {
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(googleEmail)) {
       setAddAccountError("Enter a valid Google email, or leave it blank.")
       return
     }
