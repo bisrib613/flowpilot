@@ -8,7 +8,7 @@ import packageJson from "../package.json"
 import { neighborIndices, shortcutBounds, readPreloadSides } from "./services/workspace-policy"
 import { loadAccounts, saveAccounts } from "./services/account-store"
 
-type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt" | "migoo"
+type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt" | "migoo" | "claude"
 type AppView = "accounts" | "favorites" | "settings" | "flow"
 type BookmarkServiceId = "flow" | "chatgpt"
 type ServiceBookmark = {
@@ -33,6 +33,7 @@ const SERVICES: Record<ServiceId, { name: string; shortName: string; logo: strin
   leonardo: { name: "Leonardo AI", shortName: "Leonardo", logo: "/leonardo-logo.png", url: "https://app.leonardo.ai/" },
   chatgpt: { name: "ChatGPT", shortName: "ChatGPT", logo: "/chatgpt-logo.png", url: "https://chatgpt.com/" },
   migoo: { name: "Migoo", shortName: "Migoo", logo: "/migoo-logo.png", url: "https://migoo.ai/home" },
+  claude: { name: "Claude", shortName: "Claude", logo: "/claude-logo.svg", url: "https://claude.ai/" },
 }
 const serviceOf = (account: Account): ServiceId => account.service || "flow"
 const BOOKMARK_STORAGE_KEYS: Record<BookmarkServiceId, string> = {
