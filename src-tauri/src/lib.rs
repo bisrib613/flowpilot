@@ -203,9 +203,9 @@ async fn check_flow_profile(app: tauri::AppHandle, account_id: String) -> Result
             }).await?;
             let location = flow_location(&url);
             match location {
-                FlowLocation::Working if attempt >= 4 => {
+                FlowLocation::Working if attempt >= 7 => {
                     working_ticks += 1;
-                    if working_ticks >= 2 { return Ok("signed_in"); }
+                    if working_ticks >= 3 { return Ok("signed_in"); }
                 }
                 FlowLocation::VerificationSkipped => return Ok("verification_skipped"),
                 FlowLocation::Landing => {
