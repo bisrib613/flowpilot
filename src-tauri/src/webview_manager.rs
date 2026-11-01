@@ -568,6 +568,81 @@ pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: Strin
     Ok(port)
 }
 
+const FLOW_CHECK_URL: &str = "https://flow.google.com/";
+
+// A manual re-login scan opens at most one temporary profile at a time.
+// Existing cached WebViews are reused without changing the active account.
+pub fn begin_flow_profile_check<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<Option<bool>, String> {
+    let key = profile_key("flow", &account_id)?;
+    let accounts = crate::account_store::load_accounts(app.clone())?
+        .ok_or_else(|| "Account storage unavailable".to_string())?;
+    let exists = accounts.as_array().is_some_and(|rows| rows.iter().any(|row| {
+        row.get("id").and_then(|value| value.as_str()) == Some(&account_id)
+            && row.get("service").and_then(|value| value.as_str()).unwrap_or("flow") == "flow"
+    }));
+    if !exists { return Err("Google Flow profile not found".into()); }
+    // Do not initiate a fresh login for profiles that have never been opened.
+    if !profile_path(app, &key)?.exists() { return Ok(None); }
+    let label = webview_label(&key);
+    let created = app.get_webview(&label).is_none();
+    if created {
+        open_view(app, account_id, "flow".into(), 0.0, 0.0, 980.0, 720.0, true)?;
+    }
+    let webview = app.get_webview(&label).ok_or("Flow WebView was not created")?;
+    webview.navigate(FLOW_CHECK_URL.parse().map_err(|_| "Invalid Flow check URL")?)
+        .map_err(|error| error.to_string())?;
+    Ok(Some(created))
+}
+
+pub fn poll_flow_profile_check<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<String, String> {
+    let key = profile_key("flow", &account_id)?;
+    let view = app.get_webview(&webview_label(&key)).ok_or("Flow WebView is no longer open")?;
+    view.url().map(|url| url.to_string()).map_err(|error| error.to_string())
+}
+
+pub fn click_flow_relogin_entry<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<(), String> {
+    let key = profile_key("flow", &account_id)?;
+    let view = app.get_webview(&webview_label(&key)).ok_or("Flow WebView is no longer open")?;
+    let current = view.url().map_err(|error| error.to_string())?;
+    if current.scheme() != "https" || current.host_str() != Some("flow.google.com") || current.path() != "/about" {
+        return Err("Flow is not on the signed-out landing page".into());
+    }
+    // No password is ever used here; login proceeds through Google's ordinary OAuth UI.
+    // Fail closed if Flow changes the landing-page button markup.
+    view.eval(r#"(function () {
+        if (location.origin !== 'https://flow.google.com' || location.pathname !== '/about') return;
+        if (window.__flowpilotReLoginClicked) return;
+        const started = Date.now();
+        const click = () => {
+            const candidates = Array.from(document.querySelectorAll('a, button, [role="button"]'));
+            const button = candidates.find(el => /^(create with google flow|try flow|try google flow|start creating|sign in|sign in with google)$/i.test((el.textContent || '').trim()));
+            if (!button) return false;
+            window.__flowpilotReLoginClicked = true;
+            button.click();
+            return true;
+        };
+        if (click()) return;
+        const observer = new MutationObserver(() => {
+            if (click() || Date.now() - started > 12000) observer.disconnect();
+        });
+        observer.observe(document.documentElement, {childList:true,subtree:true});
+    })();"#).map_err(|error| error.to_string())
+}
+
+pub fn finish_flow_profile_check<R: Runtime>(app: &AppHandle<R>, account_id: String, created: bool) -> Result<(), String> {
+    if !created { return Ok(()); }
+    let state = app.state::<WebviewManager>();
+    let key = profile_key("flow", &account_id)?;
+    let _lock = state.operation.lock().map_err(|_| "webview state unavailable")?;
+    let label = webview_label(&key);
+    if let Some(view) = app.get_webview(&label) {
+        view.close().map_err(|error| error.to_string())?;
+    }
+    state.cached_accounts.lock().map_err(|_| "webview state unavailable")?.remove(&key);
+    state.automation_ports.lock().map_err(|_| "webview state unavailable")?.remove(&key);
+    Ok(())
+}
+
 // These operations run on the UI thread. Epochs reject stale queued preload work.
 fn cancel_preloads(state: &WebviewManager) -> Result<u64, String> {
     let mut epoch = state.preload_epoch.lock().map_err(|_| "webview state unavailable")?;
