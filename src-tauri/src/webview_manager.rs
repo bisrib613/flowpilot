@@ -29,6 +29,7 @@ pub struct WebviewManager {
     operation: Mutex<()>,
     preload_epoch: Mutex<u64>,
     preload_targets: Mutex<Vec<String>>,
+    browser_profile_ports: Mutex<HashMap<String, u16>>,
     automation_ports: Mutex<HashMap<String, u16>>,
 }
 
@@ -42,6 +43,7 @@ impl Default for WebviewManager {
             operation: Mutex::new(()),
             preload_epoch: Mutex::new(0),
             preload_targets: Mutex::new(Vec::new()),
+            browser_profile_ports: Mutex::new(HashMap::new()),
             automation_ports: Mutex::new(HashMap::new()),
         }
     }
@@ -394,8 +396,17 @@ fn open_view<R: Runtime>(
     let popup_app = app.clone();
     let popup_prefix = format!("{requested_label}-popup-");
     let popup_profile = profile.clone();
-    let flow_environment = if service == "flow" {
-        let port = reserve_loopback_port()?;
+    // Every WebView sharing the Flow directory must use identical browser arguments.
+    let flow_environment = if storage_key.starts_with("flow-") {
+        let mut ports = state.browser_profile_ports.lock().map_err(|_| "webview state unavailable")?;
+        let port = match ports.get(&storage_key) {
+            Some(port) => *port,
+            None => {
+                let port = reserve_loopback_port()?;
+                ports.insert(storage_key.clone(), port);
+                port
+            }
+        };
         Some((port, flow_browser_args(port)))
     } else {
         None
