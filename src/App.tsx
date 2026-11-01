@@ -129,6 +129,9 @@ export default function App() {
   const [dialog, setDialog] = useState<Account | null>(null)
   const [menu, setMenu] = useState<string | null>(null)
   const [cacheNotice, setCacheNotice] = useState("")
+  const [flowScanRunning, setFlowScanRunning] = useState(false)
+  const [flowScanResults, setFlowScanResults] = useState<Record<string, string>>({})
+  const flowScanLock = useRef(false)
   const [clearingCacheId, setClearingCacheId] = useState<string | null>(null)
   const [clearingAllCaches, setClearingAllCaches] = useState(false)
   const [addAccountOpen, setAddAccountOpen] = useState(false)
@@ -218,6 +221,43 @@ export default function App() {
     } finally {
       setClearingCacheId(null)
       setClearingAllCaches(false)
+    }
+  }
+  const checkAllFlowProfiles = async () => {
+    if (flowScanLock.current || !accountStorageReady) return
+    flowScanLock.current = true
+    setFlowScanRunning(true)
+    setActiveService("flow")
+    setView("accounts")
+    setFlowScanResults({})
+    const target = accounts.filter((a) => serviceOf(a) === "flow")
+    try {
+      if (!(await invoke<boolean>("google_relogin_status"))) {
+        setCacheNotice("Enable Google Flow auto re-login in Settings first.")
+        return
+      }
+      for (const account of target) {
+        setFlowScanResults((current) => ({ ...current, [account.id]: "Checking…" }))
+        try {
+          const status = await invoke<string>("check_flow_profile", { accountId: account.id })
+          const label: Record<string, string> = {
+            signed_in: "Signed in",
+            no_previous_session: "Not previously signed in",
+            relogin_unconfirmed: "Re-login attempted · verify manually",
+            google_auth_pending: "Google sign-in still pending",
+            unknown: "Could not confirm login status",
+          }
+          setFlowScanResults((current) => ({ ...current, [account.id]: label[status] || "Unknown status" }))
+        } catch (error) {
+          setFlowScanResults((current) => ({ ...current, [account.id]: `Check failed: ${String(error)}` }))
+        }
+      }
+      setCacheNotice(`Checked ${target.length} Google Flow profile${target.length === 1 ? "" : "s"}. Review each result below.`)
+    } catch (error) {
+      setCacheNotice(`Could not begin Google Flow check: ${String(error)}`)
+    } finally {
+      flowScanLock.current = false
+      setFlowScanRunning(false)
     }
   }
   const handleToggleFavorite = (a: Account) => {
@@ -599,7 +639,13 @@ export default function App() {
                   placeholder="Search accounts..."
                 />
               </div>
-              {view === "accounts" && <button className="primary" disabled={!accountStorageReady} onClick={handleAddAccount}>
+              {view === "accounts" && activeService === "flow" && (
+                <button className="secondary" disabled={!accountStorageReady || flowScanRunning || serviceAccounts.length === 0}
+                  onClick={() => void checkAllFlowProfiles()}>
+                  {flowScanRunning ? "Checking Flow profiles…" : "Check & Re-login All"}
+                </button>
+              )}
+              {view === "accounts" && <button className="primary" disabled={!accountStorageReady || flowScanRunning} onClick={handleAddAccount}>
                 + Add account
               </button>}
             </div>
@@ -612,6 +658,16 @@ export default function App() {
             <button type="button" aria-label="Dismiss cache status" onClick={() => setCacheNotice("")}>×</button>
           </div>
         )}
+        {view === "accounts" && activeService === "flow" && Object.keys(flowScanResults).length > 0 && (
+          <section className="cache-status" role="status" aria-label="Google Flow profile check results">
+            <strong>Google Flow session check</strong>
+            <ul>
+              {serviceAccounts.filter((a) => flowScanResults[a.id]).map((a) => (
+                <li key={a.id}>{a.name}: {flowScanResults[a.id]}</li>
+              ))}
+            </ul>
+          </section>
+        )}
         {view === "settings" ? (
           <>
           <nav className="settings-tabs" aria-label="Settings sections">
@@ -619,7 +675,7 @@ export default function App() {
           </nav>
           {settingsTab === "general" ? <>
           <DownloadSettings />
-          <GoogleReLoginSettings />
+          <GoogleReLoginSettings onEnabled={() => void checkAllFlowProfiles()} />
           <section className="preload-setting">
             <div><h2>Account preload</h2><p>Keep up to this many accounts ready on each side of the current profile, per service. More accounts use more memory.</p></div>
             <label htmlFor="preload-sides">Accounts per side</label>
@@ -1217,7 +1273,7 @@ function Settings({
     </div>
   )
 }
-function GoogleReLoginSettings() {
+function GoogleReLoginSettings({ onEnabled }: { onEnabled: () => void }) {
   const [enabled, setEnabled] = useState(false)
   const [password, setPassword] = useState("")
   const [busy, setBusy] = useState(false)
@@ -1239,7 +1295,8 @@ function GoogleReLoginSettings() {
       await invoke("google_relogin_save_password", { password })
       setEnabled(true)
       setPassword("")
-      setMessage("Google Flow re-login is enabled.")
+      setMessage("Google Flow re-login is enabled. Checking existing profiles…")
+      onEnabled()
     } catch (error) {
       setMessage(`Could not save password: ${String(error)}`)
     } finally {
@@ -1264,7 +1321,7 @@ function GoogleReLoginSettings() {
     <section className="preload-setting">
       <div>
         <h2>Google Flow auto re-login</h2>
-        <p>Only after Google shows an already-recognized account chooser. Fresh login and additional verification are not automated. The password is shared across Flow profiles and stored in Windows Credential Manager.</p>
+        <p>After saving, Flowpilot checks your existing Flow profiles. You can also run Check &amp; Re-login All from the Flow account list. Fresh login and additional verification are not automated. The password is shared across Flow profiles and stored in Windows Credential Manager.</p>
         <p>Status: <strong>{enabled ? "Enabled" : "Disabled"}</strong></p>
       </div>
       <label htmlFor="google-relogin-password">Shared Google password</label>
