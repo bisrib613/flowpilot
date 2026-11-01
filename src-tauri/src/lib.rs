@@ -147,6 +147,101 @@ async fn clear_google_flow_cache(
     .map_err(|e| e.to_string())?
 }
 
+
+#[derive(PartialEq, Eq, Debug)]
+enum FlowLocation { Landing, Working, GoogleAuth, Unknown }
+
+fn flow_location(raw: &str) -> FlowLocation {
+    let Ok(url) = tauri::Url::parse(raw) else { return FlowLocation::Unknown };
+    if url.scheme() != "https" { return FlowLocation::Unknown; }
+    if url.host_str() == Some("accounts.google.com") { return FlowLocation::GoogleAuth; }
+    if url.host_str() != Some("flow.google.com") { return FlowLocation::Unknown; }
+    match url.path() {
+        "/about" => FlowLocation::Landing,
+        "/" => FlowLocation::Working,
+        path if path.starts_with("/project/") || path.starts_with("/library") => FlowLocation::Working,
+        _ => FlowLocation::Unknown,
+    }
+}
+
+#[tauri::command]
+async fn check_flow_profile(app: tauri::AppHandle, account_id: String) -> Result<&'static str, String> {
+    if !google_relogin::google_relogin_status()? {
+        return Err("Enable Google Flow auto re-login in Settings first".into());
+    }
+    let start_app = app.clone();
+    let start_id = account_id.clone();
+    let Some(created) = run_on_ui_thread(&app, move || {
+        webview_manager::begin_flow_profile_check(&start_app, start_id)
+    }).await? else {
+        return Ok("no_previous_session");
+    };
+
+    let result = async {
+        let mut landing_seen = false;
+        let mut working_ticks = 0_u32;
+        let mut last_location = FlowLocation::Unknown;
+        for attempt in 0..22 {
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+            let poll_app = app.clone();
+            let poll_id = account_id.clone();
+            let url = run_on_ui_thread(&app, move || {
+                webview_manager::poll_flow_profile_check(&poll_app, poll_id)
+            }).await?;
+            let location = flow_location(&url);
+            match location {
+                FlowLocation::Working if attempt >= 4 => {
+                    working_ticks += 1;
+                    if working_ticks >= 2 { return Ok("signed_in"); }
+                }
+                FlowLocation::Landing => {
+                    working_ticks = 0;
+                    if !landing_seen {
+                        landing_seen = true;
+                        let click_app = app.clone();
+                        let click_id = account_id.clone();
+                        run_on_ui_thread(&app, move || {
+                            webview_manager::click_flow_relogin_entry(&click_app, click_id)
+                        }).await?;
+                    }
+                }
+                _ => { working_ticks = 0; }
+            }
+            last_location = location;
+        }
+        if landing_seen { Ok("relogin_unconfirmed") }
+        else if last_location == FlowLocation::GoogleAuth { Ok("google_auth_pending") }
+        else { Ok("unknown") }
+    }.await;
+    // A temporary check WebView is never retained across profiles.
+    // A user-opened view remains intact.
+    let finish_app = app.clone();
+    let finish_id = account_id;
+    let cleanup = run_on_ui_thread(&app, move || {
+        webview_manager::finish_flow_profile_check(&finish_app, finish_id, created)
+    }).await;
+    match (result, cleanup) {
+        (Ok(status), Ok(())) => Ok(status),
+        (Err(error), _) => Err(error),
+        (_, Err(error)) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod flow_location_tests {
+    use super::{flow_location, FlowLocation};
+    #[test]
+    fn logged_out_landing_differs_from_healthy_flow_and_unexpected_urls() {
+        assert_eq!(flow_location("https://flow.google.com/about"), FlowLocation::Landing);
+        assert_eq!(flow_location("https://flow.google.com/"), FlowLocation::Working);
+        assert_eq!(flow_location("https://flow.google.com/project/123"), FlowLocation::Working);
+        assert_eq!(flow_location("https://accounts.google.com/signin"), FlowLocation::GoogleAuth);
+        assert_eq!(flow_location("https://flow.google.com/404?reason=project"), FlowLocation::Unknown);
+        assert_eq!(flow_location("https://flow.google.com.evil.invalid/about"), FlowLocation::Unknown);
+        assert_eq!(flow_location("http://flow.google.com/about"), FlowLocation::Unknown);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -178,6 +273,7 @@ pub fn run() {
             dialog_thread_experiment::debug_trigger_isolated_dialog,
             #[cfg(all(windows, feature = "diag"))]
             webview_download_bridge::diagnostic_save_file,
+            check_flow_profile,
             google_relogin::google_relogin_status,
             google_relogin::google_relogin_save_password,
             google_relogin::google_relogin_disable,
