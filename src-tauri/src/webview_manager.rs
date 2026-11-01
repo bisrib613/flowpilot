@@ -609,24 +609,7 @@ pub fn click_flow_relogin_entry<R: Runtime>(app: &AppHandle<R>, account_id: Stri
     }
     // No password is ever used here; login proceeds through Google's ordinary OAuth UI.
     // Fail closed if Flow changes the landing-page button markup.
-    view.eval(r#"(function () {
-        if (location.origin !== 'https://flow.google.com' || location.pathname !== '/about') return;
-        if (window.__flowpilotReLoginClicked) return;
-        const started = Date.now();
-        const click = () => {
-            const candidates = Array.from(document.querySelectorAll('a, button, [role="button"]'));
-            const button = candidates.find(el => /^(create with google flow|try flow|try google flow|start creating|sign in|sign in with google)$/i.test((el.textContent || '').trim()));
-            if (!button) return false;
-            window.__flowpilotReLoginClicked = true;
-            button.click();
-            return true;
-        };
-        if (click()) return;
-        const observer = new MutationObserver(() => {
-            if (click() || Date.now() - started > 12000) observer.disconnect();
-        });
-        observer.observe(document.documentElement, {childList:true,subtree:true});
-    })();"#).map_err(|error| error.to_string())
+    view.eval(include_str!("flow_landing_relogin.js")).map_err(|error| error.to_string())
 }
 
 pub fn finish_flow_profile_check<R: Runtime>(app: &AppHandle<R>, account_id: String, created: bool) -> Result<(), String> {
