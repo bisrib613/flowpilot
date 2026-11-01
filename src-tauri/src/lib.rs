@@ -1,5 +1,4 @@
 use std::time::Duration;
-use tauri::Manager;
 
 mod account_store;
 mod webview_manager;
