@@ -28,7 +28,7 @@ type Account = {
   flowSessionId?: string
 }
 const SERVICES: Record<ServiceId, { name: string; shortName: string; logo: string; url: string }> = {
-  flow: { name: "Google Flow", shortName: "Flow", logo: "/flow-logo.png", url: "https://labs.google/fx/tools/flow" },
+  flow: { name: "Google Flow", shortName: "Flow", logo: "/flow-logo.png", url: "https://flow.google.com/" },
   dola: { name: "Dola", shortName: "Dola", logo: "/dola-logo.png", url: "https://www.dola.com/" },
   leonardo: { name: "Leonardo AI", shortName: "Leonardo", logo: "/leonardo-logo.png", url: "https://app.leonardo.ai/" },
   chatgpt: { name: "ChatGPT", shortName: "ChatGPT", logo: "/chatgpt-logo.png", url: "https://chatgpt.com/" },
@@ -52,8 +52,10 @@ const isBookmarkUrl = (service: BookmarkServiceId, value: string) => {
     ) return false
     if (service === "chatgpt") return url.hostname === "chatgpt.com"
     return (
-      url.hostname === "labs.google" &&
-      (url.pathname === "/fx/tools/flow" || url.pathname.startsWith("/fx/tools/flow/"))
+      (url.hostname === "flow.google.com" &&
+        (url.pathname === "/" || url.pathname.startsWith("/project/") || url.pathname.startsWith("/library"))) ||
+      (url.hostname === "labs.google" &&
+        (url.pathname === "/fx/tools/flow" || url.pathname.startsWith("/fx/tools/flow/")))
     )
   } catch {
     return false
@@ -85,7 +87,7 @@ const TELEGRAM_CHANNEL_URL = ""
 
 const bookmarkUrlExample = (service: BookmarkServiceId) =>
   service === "flow"
-    ? "https://labs.google/fx/tools/flow/..."
+    ? "https://flow.google.com/project/..."
     : "https://chatgpt.com/..."
 export default function App() {
   const [downloadNotice, setDownloadNotice] = useState("")
