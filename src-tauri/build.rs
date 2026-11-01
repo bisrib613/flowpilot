@@ -19,6 +19,7 @@ fn main() {
                 "complete_blob_download",
                 "cancel_blob_download",
                 "debug_trigger_isolated_dialog",
+                "check_flow_profile",
                 "google_relogin_status",
                 "google_relogin_save_password",
                 "google_relogin_disable",
