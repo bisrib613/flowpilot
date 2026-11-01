@@ -69,15 +69,26 @@
   }
 
   function submitControl() {
-    const candidates = Array.from(document.querySelectorAll(
+    // Google commonly wraps the real button inside #passwordNext. Resolve
+    // the actual clickable descendant, not just the wrapper div.
+    const roots = Array.from(document.querySelectorAll(
       '#passwordNext, #signIn'
     )).filter(isVisible);
-    if (candidates.length !== 1) return null;
-    const root = candidates[0];
-    const button = root.matches("button") ? root :
-      root.querySelector("button, [role='button']");
-    return button || root;
+    if (roots.length !== 1) return null;
+    const root = roots[0];
+    const button = root.matches('button, input[type="submit"]')
+      ? root : root.querySelector('button, input[type="submit"], [role="button"]');
+    if (!button || !isVisible(button)) return null;
+    return button;
   }
+
+  const buttonReady = (button) =>
+    button && !button.disabled &&
+    button.getAttribute("aria-disabled") !== "true" &&
+    !button.closest("[inert], [aria-disabled='true']");
+  let passwordFillStarted = false;
+  let nextAttemptStartedAt = 0;
+  let nextCheckScheduled = false;
 
   function selectRecognizedAccount() {
     const nodes = Array.from(document.querySelectorAll(
@@ -114,24 +125,60 @@
       HTMLInputElement.prototype, "value"
     )?.set;
     if (!setter) return;
-    stop(); // Prevent duplicate submits when the input triggers DOM mutations.
-    setter.call(input, password);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
 
-    // Give Google's UI time to process input events before clicking Next.
-    setTimeout(() => {
+    if (!passwordFillStarted) {
+      passwordFillStarted = true;
+      nextAttemptStartedAt = Date.now();
+      // Keep the observer alive: Google's password view may rerender and
+      // its Next button can remain disabled while input is processed.
+      input.focus?.();
+      setter.call(input, password);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    const checkNext = () => {
+      nextCheckScheduled = false;
+      if (finished) return;
       if (isVerificationChallenge()) {
-        setter.call(input, "");
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        sessionStorage.removeItem(armKey);
+        const current = passwordControl();
+        if (current) {
+          setter.call(current, "");
+          current.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+        skipVerification();
         return;
       }
-      if (!input.isConnected || input.value !== password ||
-          getArmedIdentity()?.email !== armed.email) return;
-      sessionStorage.removeItem(armKey);
-      button.click();
-    }, 140);
+      if (getArmedIdentity()?.email !== armed.email) { stop(); return; }
+
+      // Allow Google's controlled form to settle before submit; query the
+      // button again because its DOM node may have been replaced.
+      const currentInput = passwordControl();
+      const currentButton = submitControl();
+      const elapsed = Date.now() - nextAttemptStartedAt;
+      if (currentInput && currentInput.isConnected &&
+          currentInput.value === password && buttonReady(currentButton) &&
+          elapsed >= 350) {
+        // Click ONCE. Never auto-retry a submission or bypass challenges.
+        sessionStorage.removeItem(armKey);
+        stop();
+        currentButton.click();
+        return;
+      }
+      if (elapsed >= 6500) {
+        // Leave the filled form for a manual Next click rather than guessing.
+        stop();
+        return;
+      }
+      scheduleNextCheck();
+    };
+
+    const scheduleNextCheck = () => {
+      if (nextCheckScheduled || finished) return;
+      nextCheckScheduled = true;
+      setTimeout(checkNext, 250);
+    };
+    scheduleNextCheck();
   }
 
   function run() {
