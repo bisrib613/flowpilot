@@ -16,9 +16,9 @@
   // route. Everything else needing an extra Google challenge is left alone.
   const isVerificationChallenge = () => {
     const pathname = window.location.pathname || "";
-    if (/\\/(?:captcha|recaptcha|sorry)(?:\\/|$)/i.test(pathname)) return true;
-    if (/\\/challenge(?:\\/|$)/i.test(pathname) &&
-        !/\\/challenge\\/pwd(?:\\/|$)/i.test(pathname)) return true;
+    if (/\/(?:captcha|recaptcha|sorry)(?:\/|$)/i.test(pathname)) return true;
+    if (/\/challenge(?:\/|$)/i.test(pathname) &&
+        !/\/challenge\/pwd(?:\/|$)/i.test(pathname)) return true;
     const widgets = document.querySelectorAll(
       'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[title*="captcha" i], ' +
       '[data-sitekey], .g-recaptcha, .h-captcha, [aria-label*="captcha" i]'
