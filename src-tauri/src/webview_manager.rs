@@ -8,7 +8,7 @@ use tauri::{AppHandle, Manager, Runtime, WebviewUrl};
 
 #[cfg(windows)]
 use webview2_com::{
-    ClearBrowsingDataCompletedHandler,
+    ClearBrowsingDataCompletedHandler, WindowCloseRequestedEventHandler,
     Microsoft::Web::WebView2::Win32::{
         ICoreWebView2Profile2, ICoreWebView2_13,
         COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
@@ -181,6 +181,58 @@ fn flow_builder<R: Runtime>(label: String, url: WebviewUrl, profile: PathBuf, br
         .data_directory(profile)
         .additional_browser_args(browser_args)
 }
+
+#[cfg(windows)]
+fn attach_popup_window_close_handler<R: Runtime>(
+    popup: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    let app = popup.app_handle().clone();
+    let popup_label = popup.label().to_string();
+    // WebView2's window.close() request must close the TOP-LEVEL Tauri popup,
+    // not just the native WebView container. Register only for our popups:
+    // never close the service workspace or a shared Google Flow profile.
+    popup.with_webview(move |platform| {
+        let result = (|| -> Result<(), String> {
+            let native = unsafe { platform.controller().CoreWebView2() }
+                .map_err(|error| error.to_string())?;
+            let callback_app = app.clone();
+            let callback_label = popup_label.clone();
+            let mut token = Default::default();
+            unsafe {
+                native.add_WindowCloseRequested(
+                    &WindowCloseRequestedEventHandler::create(Box::new(move |_, _| {
+                        let dispatch_app = callback_app.clone();
+                        let close_app = callback_app.clone();
+                        let close_label = callback_label.clone();
+                        // Dispatch AFTER WebView2's event returns to avoid
+                        // destroying a WebView from its own COM callback.
+                        let _ = dispatch_app.run_on_main_thread(move || {
+                            if let Some(window) = close_app.get_webview_window(&close_label) {
+                                let _ = window.close();
+                            }
+                        });
+                        Ok(())
+                    })),
+                    &mut token,
+                )
+            }
+            .map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("[flowpilot-webview] OAuth popup close handler unavailable: {error}");
+        }
+    })
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+fn attach_popup_window_close_handler<R: Runtime>(
+    _popup: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    Ok(())
+}
+
 
 
 #[cfg(windows)]
@@ -459,7 +511,14 @@ fn open_view<R: Runtime>(
                     popup_builder.build()
                 };
                 match popup {
-                    Ok(window) => return tauri::webview::NewWindowResponse::Create { window },
+                    Ok(window) => {
+                        // Keep the opener relationship for Google OAuth and
+                        // preserve the shared browser profile/cookies.
+                        if let Err(error) = attach_popup_window_close_handler(&window) {
+                            eprintln!("[flowpilot-webview] popup close setup failed: {error}");
+                        }
+                        return tauri::webview::NewWindowResponse::Create { window };
+                    }
                     Err(error) => eprintln!("[flowpilot-webview] sign-in window failed: {error}"),
                 }
             }
