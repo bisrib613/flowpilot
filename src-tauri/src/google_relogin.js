@@ -158,7 +158,8 @@
   });
   observer.observe(document.documentElement || document, {
     subtree: true, childList: true, attributes: true,
-    attributeFilter: ["data-identifier", "data-email", "type"]
+    attributeFilter: ["data-identifier", "data-email", "type",
+      "class", "style", "hidden", "aria-hidden", "disabled"]
   });
   run();
 })(__FLOWPILOT_EMAIL__, __FLOWPILOT_PASSWORD__);
