@@ -26,6 +26,7 @@
     "allow-debug-trigger-isolated-dialog",
     "allow-google-relogin-status",
     "allow-google-relogin-save-password",
-    "allow-google-relogin-disable"
+    "allow-google-relogin-disable",
+    "allow-check-flow-profile"
   ]
 }
