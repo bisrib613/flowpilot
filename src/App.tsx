@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react"
 import { getVersion } from "@tauri-apps/api/app"
-import { getCurrentWindow } from "@tauri-apps/api/window"
 import { listen } from "@tauri-apps/api/event"
 import { invoke } from "@tauri-apps/api/core"
 import { relaunch } from "@tauri-apps/plugin-process"
@@ -84,33 +83,6 @@ const bookmarkUrlExample = (service: BookmarkServiceId) =>
   service === "flow"
     ? "https://labs.google/fx/tools/flow/..."
     : "https://chatgpt.com/..."
-const LICENSE_PURCHASE_URL = "https://tokotelegram.com/toko/flowpilot"
-const TELEGRAM_CHANNEL_URL = ""
-const APP_VERSION = packageJson.version
-type LicenseState = { plan: string; status: string; expires_at: string | null; lifetime: boolean; last_validated_at: string; device_id: string }
-const licensePlanLabel = (plan: string) => ({ five_minutes: "5 Minutes", one_day: "1 Day", seven_days: "7 Days", thirty_days: "30 Days", one_year: "1 Year", lifetime: "Lifetime" }[plan] || plan)
-const licenseStatusLabel = (status: string) => status ? status.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Unavailable"
-const licenseExpiryLabel = (state: LicenseState | null) => state?.lifetime ? "Lifetime" : state?.expires_at ? new Date(state.expires_at).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }) : "—"
-const plans = [
-  {
-    name: "30 Days",
-    originalPrice: "Rp50,000",
-    price: "Rp25,000",
-    description: "Flowpilot access for 30 days",
-  },
-  {
-    name: "1 Year",
-    originalPrice: "Rp149.000",
-    price: "Rp99.000",
-    description: "Flowpilot access for 1 year",
-  },
-  {
-    name: "Lifetime",
-    originalPrice: "Rp249.000",
-    price: "Rp149.000",
-    description: "Flowpilot access with no expiration",
-  },
-]
 const starter: Account[] = [
   {
     id: "main",
@@ -155,12 +127,6 @@ export default function App() {
     }).catch((error) => console.error("Download status listener failed", error))
     return () => { disposed = true; unlisten?.() }
   }, [])
-  const [licensed, setLicensed] = useState(true)
-  const [licenseChecking, setLicenseChecking] = useState(false)
-  const [licenseError, setLicenseError] = useState("")
-  const [licenseState, setLicenseState] = useState<LicenseState | null>(null)
-  const [deviceId, setDeviceId] = useState("")
-  const [key, setKey] = useState("")
   const [accounts, setAccounts] = useState<Account[]>([])
   const [bookmarksByService, setBookmarksByService] = useState<Record<BookmarkServiceId, ServiceBookmark[]>>(() => ({
     flow: loadBookmarks("flow"),
@@ -170,6 +136,8 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState("general")
   const [activeService, setActiveService] = useState<ServiceId>("flow")
   const [accountsLoaded, setAccountsLoaded] = useState(false)
+  const [accountStorageReady, setAccountStorageReady] = useState(false)
+  const [accountStorageError, setAccountStorageError] = useState("")
   const [profile, setProfile] = useState<{
     name: string
     avatar: string | null
@@ -202,7 +170,6 @@ export default function App() {
   const [dragTargetId, setDragTargetId] = useState<string | null>(null)
   const [dragTargetAfter, setDragTargetAfter] = useState(false)
   const [dragOrderIds, setDragOrderIds] = useState<string[] | null>(null)
-  useEffect(() => { void (async () => { try { const id=await invoke<string>("get_device_id"); setDeviceId(id); const saved=await invoke<LicenseState|null>("get_license_state"); if(saved?.status) setLicenseState(saved) } catch(e) { console.warn("License check failed:",e) } })() }, [])
   const dragSourceRef = useRef<HTMLElement | null>(null)
   const dragPointerIdRef = useRef<number | null>(null)
   const dragSourceIdRef = useRef<string | null>(null)
@@ -339,12 +306,22 @@ export default function App() {
     localStorage.setItem("flowpilot-profile", JSON.stringify(next))
   }
   useEffect(() => {
-    if (!licensed || accountsLoaded) return
-    void loadAccounts().then((saved) => setAccounts(saved as Account[])).finally(() => setAccountsLoaded(true))
-  }, [licensed, accountsLoaded])
+    if (accountsLoaded) return
+    void loadAccounts().then((saved) => {
+      setAccounts(saved as Account[])
+      setAccountStorageReady(true)
+    }).catch((error) => {
+      console.error("Account storage is unavailable", error)
+      setAccountStorageError("Account data could not be loaded. Changes are disabled to protect existing accounts.")
+    }).finally(() => setAccountsLoaded(true))
+  }, [accountsLoaded])
   useEffect(() => {
-    if (licensed && accountsLoaded) void saveAccounts(accounts)
-  }, [accounts, licensed, accountsLoaded])
+    if (!accountsLoaded || !accountStorageReady) return
+    void saveAccounts(accounts).then(() => setAccountStorageError("")).catch((error) => {
+      console.error("Account changes could not be saved", error)
+      setAccountStorageError("Account changes could not be saved. Do not close Flowpilot until the storage issue is resolved.")
+    })
+  }, [accounts, accountsLoaded, accountStorageReady])
   useEffect(() => {
     try {
       localStorage.setItem(BOOKMARK_STORAGE_KEYS.flow, JSON.stringify(bookmarksByService.flow))
@@ -487,15 +464,6 @@ export default function App() {
     setDragTargetAfter(false)
     setDragOrderIds(serviceAccounts.map((account) => account.id))
   }
-  const activateLicense = async () => {
-    if (!key.trim() || !deviceId) { setLicenseError("Invalid License"); return }
-    setLicenseChecking(true); setLicenseError("")
-    try { const activated=await invoke<LicenseState>("activate_license", { licenseKey: key }); setLicenseState(activated); const w = getCurrentWindow(); setKey(""); setLicensed(true)
-      await invoke("expand_main_window"); await w.show(); await w.setFocus(); return
-    } catch { setLicenseError("Server Unavailable") } finally { setLicenseChecking(false) }
-  }
-  const openLicensePurchase = () =>
-    invoke("open_external_url", { url: LICENSE_PURCHASE_URL })
   useEffect(() => {
     const dismiss = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return
@@ -536,50 +504,10 @@ export default function App() {
       if (previousFocus?.isConnected) previousFocus.focus()
     }
   }, [dialog, addAccountOpen])
-  if (licenseChecking && !licensed)
-    return <div className="gate"><div className="gate-card"><Brand /><h1>Checking your license</h1><p>Connecting securely to Flowpilot License Server…</p></div></div>
-  if (!licensed)
-    return (
-      <div className="gate">
-        <div className="gate-card">
-          <Brand />
-          <h1>Enter your license</h1>
-          <p>Activate Flowpilot with your license key.</p>
-          <input
-            autoFocus
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder="Enter your license key"
-            onKeyDown={(e) => e.key === "Enter" && activateLicense()}
-          />
-          <button className="primary wide" onClick={activateLicense}>
-            {licenseChecking ? "Activating…" : "Activate Flowpilot →"}
-          </button>
-          {licenseError && <p className="dialog-error">{licenseError}</p>}
-          <div className="link">
-            Don't have a license?{" "}
-            <a
-              href={LICENSE_PURCHASE_URL}
-              onClick={(e) => {
-                e.preventDefault()
-                void openLicensePurchase()
-              }}
-            >
-              <u>Buy a license →</u>
-            </a>
-          </div>
-          <small>
-            🔒 Your Google account login is handled directly in Google Flow.
-            <br />
-            We never store your login details.
-          </small>
-        </div>
-      </div>
-    )
   if (view === "flow" && active)
     return (
       <div className={`app ${fullView ? "full" : ""}`}>
-        {!fullView && <Sidebar view="flow" setView={setView} profile={profile} licenseState={licenseState} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />}
+        {!fullView && <Sidebar view="flow" setView={setView} profile={profile} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />}
         <main className="content flow-content">
           <FlowShell
             downloadNotice={downloadNotice}
@@ -641,7 +569,7 @@ export default function App() {
     )
   return (
     <div className="app">
-      <Sidebar view={view} setView={setView} profile={profile} licenseState={licenseState} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />
+      <Sidebar view={view} setView={setView} profile={profile} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />
       <main className={`content ${view === "accounts" || view === "favorites" ? "accounts-page" : ""}`}>
         <DownloadNotice message={downloadNotice} onDismiss={() => setDownloadNotice("")} />
         <header>
@@ -689,12 +617,13 @@ export default function App() {
                   placeholder="Search accounts..."
                 />
               </div>
-              {view === "accounts" && <button className="primary" onClick={handleAddAccount}>
+              {view === "accounts" && <button className="primary" disabled={!accountStorageReady} onClick={handleAddAccount}>
                 + Add account
               </button>}
             </div>
           )}
         </header>
+        {accountStorageError && <div className="cache-status" role="alert">{accountStorageError}</div>}
         {cacheNotice && (
           <div className="cache-status" role="status">
             <span>{cacheNotice}</span>
@@ -704,7 +633,7 @@ export default function App() {
         {view === "settings" ? (
           <>
           <nav className="settings-tabs" aria-label="Settings sections">
-            {["general", "updates", "license", "help"].map((tab) => <button key={tab} className={settingsTab === tab ? "active" : ""} aria-pressed={settingsTab === tab} onClick={() => setSettingsTab(tab)}>{tab === "help" ? "Help & info" : tab[0].toUpperCase() + tab.slice(1)}</button>)}
+            {["general", "updates", "help"].map((tab) => <button key={tab} className={settingsTab === tab ? "active" : ""} aria-pressed={settingsTab === tab} onClick={() => setSettingsTab(tab)}>{tab === "help" ? "Help & info" : tab[0].toUpperCase() + tab.slice(1)}</button>)}
           </nav>
           {settingsTab === "general" ? <>
           <DownloadSettings />
@@ -723,12 +652,12 @@ export default function App() {
             clearingAllCaches={clearingAllCaches}
             onClearAllCaches={() => void handleClearAllAccountCaches()}
           />
-          </> : settingsTab === "updates" ? <UpdatesPage /> : settingsTab === "license" ? <LicensePage licenseState={licenseState} onBuy={() => void openLicensePurchase()} /> : <InfoPage />}
+          </> : settingsTab === "updates" ? <UpdatesPage /> : <InfoPage />}
           </>
         ) : (
           <>
             {!accountsLoaded && <p className="account-empty" role="status">Loading accounts...</p>}
-            {accountsLoaded && displayed.length === 0 && (
+            {accountsLoaded && accountStorageReady && displayed.length === 0 && (
               <div className="account-empty" role="status">
                 <h2>{query ? "No matching accounts" : view === "favorites" ? "No favorites yet" : `No ${SERVICES[activeService].shortName} accounts yet`}</h2>
                 <p>{query ? "Try a different profile name." : view === "favorites" ? "Mark an account as a favorite to find it here." : "Add an account to create your first profile for this service."}</p>
@@ -854,7 +783,6 @@ function Sidebar({
   view,
   setView,
   profile,
-  licenseState,
   accounts, activeService, onService,
 }: {
   accounts: Account[]
@@ -863,7 +791,6 @@ function Sidebar({
   view: AppView
   setView: (view: AppView) => void
   profile: { name: string; avatar: string | null }
-  licenseState: LicenseState | null
 }) {
   return (
     <aside>
@@ -892,12 +819,7 @@ function Sidebar({
           )}
         </div>
         <div>
-          <div className="side-license-info">
-            <small>
-              <span>License {licenseState ? licenseStatusLabel(licenseState.status) : "Unavailable"}: <b>{licenseState ? licensePlanLabel(licenseState.plan) : "—"}</b></span>
-              <span>Expired: <b>{licenseExpiryLabel(licenseState)}</b></span>
-            </small>
-          </div>
+          <div className="side-license-info"><small><span>OPEN SOURCE · {profile.name}</span></small></div>
         </div>
       </div>
     </aside>
@@ -910,43 +832,6 @@ function SidebarIcon({ name }: { name: "favorites" | "settings" }) {
     settings: <><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="9" cy="6" r="1.8" fill="currentColor" stroke="none" /><circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none" /><circle cx="9" cy="18" r="1.8" fill="currentColor" stroke="none" /></>,
   }
   return <svg className="sidebar-icon" {...common}>{paths[name]}</svg>
-}
-function LicensePage({ licenseState, onBuy }: { licenseState: LicenseState | null; onBuy: () => void }) {
-  return (
-    <div className="feature-page">
-      <div className="plan-grid">
-        {plans.map((plan) => (
-          <section className="plan-card" key={plan.name}>
-            <div className="eyebrow">{plan.name.toUpperCase()}</div>
-            <s>{plan.originalPrice}</s>
-            <strong>{plan.price}</strong>
-            <p>{plan.description}.</p>
-            <button className="primary" onClick={onBuy}>
-              Buy License
-            </button>
-          </section>
-        ))}
-      </div>
-      <section className="license-info">
-        <div className="eyebrow">CURRENT LICENSE</div>
-        <h2>Current License</h2>
-        <div className="license-stats">
-          <span>
-            <b>Plan</b>
-            {licenseState ? licensePlanLabel(licenseState.plan) : "—"}
-          </span>
-          <span>
-            <b>Status</b>
-            {licenseState ? licenseStatusLabel(licenseState.status) : "Unavailable"}
-          </span>
-          <span>
-            <b>Expires</b>
-            {licenseExpiryLabel(licenseState)}
-          </span>
-        </div>
-      </section>
-    </div>
-  )
 }
 function UpdatesPage() {
   type UpdatePhase = "checking" | "upToDate" | "available" | "downloading" | "installing" | "relaunching" | "error"
@@ -1054,10 +939,6 @@ function UpdatesPage() {
 }
 function InfoPage() {
   const steps = [
-    [
-      "Enter Your License",
-      "Enter your Flowpilot license on the initial screen to activate the application.",
-    ],
     [
       "Add an Account",
       "Choose a service, add a profile, then sign in directly inside that service.",
