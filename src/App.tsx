@@ -79,6 +79,9 @@ const loadBookmarks = (service: BookmarkServiceId): ServiceBookmark[] => {
     return []
   }
 }
+const APP_VERSION = packageJson.version
+const TELEGRAM_CHANNEL_URL = ""
+
 const bookmarkUrlExample = (service: BookmarkServiceId) =>
   service === "flow"
     ? "https://labs.google/fx/tools/flow/..."
