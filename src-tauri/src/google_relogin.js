@@ -1,73 +1,85 @@
-// Only the already-recognized Google account chooser is automated.
-// No email entry, fresh login, CAPTCHA, challenge, or verification handling.
+// Automatic re-login only for an account already listed by Google.
+// No entering an email address, fresh login, CAPTCHA handling or retries.
 (function flowpilotReauth(email, password) {
   if (window.location.origin !== "https://accounts.google.com" ||
       window.self !== window.top || !password) return;
 
   const armKey = "flowpilot-recognized-reauth";
-  const maxAge = 90 * 1000;
+  const maxAge = 90_000;
   const expected = typeof email === "string" ? email.trim().toLowerCase() : "";
   let finished = false;
   let observer;
+
   const isVisible = (element) =>
     element instanceof HTMLElement && element.getClientRects().length > 0;
 
-  // A normal password challenge can use /challenge/pwd; never block that
-  // route. Everything else needing an extra Google challenge is left alone.
-  const isVerificationChallenge = () => {
+  function isVerificationChallenge() {
     const pathname = window.location.pathname || "";
     if (/\/(?:captcha|recaptcha|sorry)(?:\/|$)/i.test(pathname)) return true;
+    // The ordinary Google password step has /challenge/pwd in its URL.
     if (/\/challenge(?:\/|$)/i.test(pathname) &&
         !/\/challenge\/pwd(?:\/|$)/i.test(pathname)) return true;
-    const widgets = document.querySelectorAll(
-      'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[title*="captcha" i], ' +
-      '[data-sitekey], .g-recaptcha, .h-captcha, [aria-label*="captcha" i]'
+    const captchas = document.querySelectorAll(
+      'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], ' +
+      'iframe[title*="captcha" i], [data-sitekey], .g-recaptcha, ' +
+      '.h-captcha, [aria-label*="captcha" i]'
     );
-    return Array.from(widgets).some(isVisible);
-  };
+    return Array.from(captchas).some(isVisible);
+  }
 
-  function run() {
-    if (finished) return;
-    if (isVerificationChallenge()) {
-      // Skip this profile. Never click account/password controls or retry.
-      sessionStorage.removeItem(armKey);
-      finished = true;
-      observer?.disconnect();
-      return;
-    }
-    let armed = null;
+  function stop() {
+    finished = true;
+    observer?.disconnect();
+  }
+
+  function skipVerification() {
+    sessionStorage.removeItem(armKey);
+    stop();
+  }
+
+  function getArmedIdentity() {
+    let armed;
     try {
       armed = JSON.parse(sessionStorage.getItem(armKey) || "null");
-      if (armed && (Date.now() - armed.timestamp > maxAge ||
-          (expected && armed.email !== expected))) {
-        sessionStorage.removeItem(armKey);
-        armed = null;
-      }
     } catch (_) {
       sessionStorage.removeItem(armKey);
+      return null;
     }
-
-    if (armed) {
-      const input = document.querySelector('input[type="password"]');
-      const next = document.querySelector("#passwordNext");
-      if (!isVisible(input) || !isVisible(next)) return;
-      // The password page is permitted only after this tab selected a
-      // previously recognized identity. Never enter a username.
-      finished = true;
-      observer?.disconnect();
-      const setter = Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype, "value"
-      )?.set;
-      if (!setter) return;
-      setter.call(input, password);
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
+    if (!armed) return null;
+    if (typeof armed.email !== "string" ||
+        typeof armed.timestamp !== "number" ||
+        Date.now() - armed.timestamp < 0 ||
+        Date.now() - armed.timestamp > maxAge ||
+        (expected && armed.email !== expected)) {
       sessionStorage.removeItem(armKey);
-      const button = next.querySelector("button") || next;
-      button.click();
-      return;
+      return null;
     }
+    return armed;
+  }
 
+  function passwordControl() {
+    const fields = Array.from(document.querySelectorAll(
+      'input[name="Passwd"], input[type="password"], #Passwd'
+    )).filter((node) =>
+      node instanceof HTMLInputElement &&
+      node.type === "password" && !node.disabled && isVisible(node)
+    );
+    // Never guess which password field to fill.
+    return fields.length === 1 ? fields[0] : null;
+  }
+
+  function submitControl() {
+    const candidates = Array.from(document.querySelectorAll(
+      '#passwordNext, #signIn'
+    )).filter(isVisible);
+    if (candidates.length !== 1) return null;
+    const root = candidates[0];
+    const button = root.matches("button") ? root :
+      root.querySelector("button, [role='button']");
+    return button || root;
+  }
+
+  function selectRecognizedAccount() {
     const nodes = Array.from(document.querySelectorAll(
       "[data-identifier], [data-email]"
     ));
@@ -82,20 +94,64 @@
     const choice = expected
       ? choices.get(expected)
       : choices.size === 1 ? choices.values().next().value : null;
-    if (!choice) return; // Never guess between multiple identities.
-    const pickedEmail = expected || choices.keys().next().value;
-    finished = true;
-    observer?.disconnect();
+    if (!choice) return;
+    const selectedEmail = expected || choices.keys().next().value;
+    const clickable = choice.closest('[role="link"], [role="button"], button, a') || choice;
     sessionStorage.setItem(armKey, JSON.stringify({
-      email: pickedEmail, timestamp: Date.now()
+      email: selectedEmail, timestamp: Date.now()
     }));
-    (choice.closest('[role="link"], [role="button"], button, a') || choice).click();
+    // Do NOT stop the observer: Google may render its password step without
+    // a full page navigation. The same observer must see that transition.
+    clickable.click();
   }
 
-  const start = Date.now();
+  function submitRecognizedPassword(armed) {
+    const input = passwordControl();
+    const button = submitControl();
+    if (!input || !button) return;
+
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype, "value"
+    )?.set;
+    if (!setter) return;
+    stop(); // Prevent duplicate submits when the input triggers DOM mutations.
+    setter.call(input, password);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    // Give Google's UI time to process input events before clicking Next.
+    setTimeout(() => {
+      if (isVerificationChallenge()) {
+        setter.call(input, "");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        sessionStorage.removeItem(armKey);
+        return;
+      }
+      if (!input.isConnected || input.value !== password ||
+          getArmedIdentity()?.email !== armed.email) return;
+      sessionStorage.removeItem(armKey);
+      button.click();
+    }, 140);
+  }
+
+  function run() {
+    if (finished) return;
+    if (isVerificationChallenge()) {
+      skipVerification();
+      return;
+    }
+    const armed = getArmedIdentity();
+    if (armed) {
+      submitRecognizedPassword(armed);
+      return;
+    }
+    selectRecognizedAccount();
+  }
+
+  const started = Date.now();
   observer = new MutationObserver(() => {
-    if (Date.now() - start > 20000) {
-      observer.disconnect();
+    if (Date.now() - started > 25_000) {
+      stop();
       return;
     }
     run();
