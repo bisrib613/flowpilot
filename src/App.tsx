@@ -246,7 +246,8 @@ export default function App() {
             signed_in: "Signed in",
             no_previous_session: "Not previously signed in",
             relogin_unconfirmed: "Re-login attempted · verify manually",
-            google_auth_pending: "Google sign-in still pending",
+            google_auth_pending: "Google sign-in pending · skipped",
+            verification_skipped: "Skipped — CAPTCHA or verification required",
             unknown: "Could not confirm login status",
           }
           setFlowScanResults((current) => ({ ...current, [account.id]: label[status] || "Unknown status" }))
