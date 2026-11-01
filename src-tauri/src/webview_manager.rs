@@ -397,6 +397,8 @@ fn open_view<R: Runtime>(
         .map_err(|_| "invalid service URL")?,
     );
     let popup_app = app.clone();
+    let relogin_source_id = if service == "flow" { Some(account_id.clone()) } else { None };
+    let popup_relogin_id = relogin_source_id.clone();
     let popup_prefix = format!("{requested_label}-popup-");
     let popup_profile = profile.clone();
     // Every WebView sharing the Flow directory must use identical browser arguments.
@@ -422,6 +424,11 @@ fn open_view<R: Runtime>(
     }
         .focused(!background)
         .on_download(crate::native_downloads::handle)
+        .on_page_load(move |webview, payload| {
+            if let Some(id) = &relogin_source_id {
+                crate::google_relogin::on_page_load(webview, payload, id);
+            }
+        })
         .on_navigation(|url| url.scheme() == "https" || url.scheme() == "blob")
         .on_new_window(move |url, features| {
             if url.scheme() == "https" || url.scheme() == "blob" || url.as_str() == "about:blank" {
@@ -434,6 +441,14 @@ fn open_view<R: Runtime>(
                 .data_directory(popup_profile.clone())
                 .window_features(features)
                 .title("Flowpilot — service window")
+                .on_page_load({
+                    let flow_id = popup_relogin_id.clone();
+                    move |webview, payload| {
+                        if let Some(id) = &flow_id {
+                            crate::google_relogin::on_page_load(webview, payload, id);
+                        }
+                    }
+                })
                 .on_download(crate::native_downloads::handle)
                 .inner_size(520.0, 720.0)
                 .on_navigation(|url| url.scheme() == "https" || url.scheme() == "blob" || url.as_str() == "about:blank")
