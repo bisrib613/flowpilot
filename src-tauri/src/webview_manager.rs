@@ -56,6 +56,7 @@ fn service_url(service: &str) -> Result<&'static str, String> {
         "leonardo" => Ok("https://app.leonardo.ai/"),
         "chatgpt" => Ok("https://chatgpt.com/"),
         "migoo" => Ok("https://migoo.ai/home"),
+        "claude" => Ok("https://claude.ai/"),
         _ => Err("invalid service".to_string()),
     }
 }
@@ -101,6 +102,7 @@ mod session_tests {
         let accounts = json!([{"id":"a","name":"Original"}, {"id":"b","service":"chatgpt"}]);
         assert_eq!(session_key_from_accounts(&accounts, "flow", "a").unwrap(), "flow-a");
         assert_eq!(session_key_from_accounts(&accounts, "chatgpt", "b").unwrap(), "chatgpt-b");
+        assert_eq!(session_key_from_accounts(&accounts, "claude", "new").unwrap(), "claude-new");
     }
 
     #[test]
@@ -112,6 +114,7 @@ mod session_tests {
         ]);
         assert_eq!(session_key_from_accounts(&accounts, "chatgpt", "b").unwrap(), "flow-a");
         assert_eq!(session_key_from_accounts(&accounts, "dola", "c").unwrap(), "flow-other");
+        assert_eq!(session_key_from_accounts(&accounts, "claude", "unlinked").unwrap(), "claude-unlinked");
         let remaining = json!([accounts[1].clone()]);
         assert_eq!(session_key_from_accounts(&remaining, "chatgpt", "b").unwrap(), "flow-a");
     }
