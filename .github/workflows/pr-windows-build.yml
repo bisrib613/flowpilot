@@ -21,6 +21,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install frontend dependencies
         run: npm ci
+      - name: Set PR-only installer version (after official v1.5.4)
+        shell: pwsh
+        run: |
+          $version = "1.5.5"
+          npm version $version --no-git-tag-version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $cargoPath = "src-tauri/Cargo.toml"
+          $cargo = Get-Content $cargoPath -Raw
+          $cargo = [regex]::Replace($cargo, '(?m)^version = "\d+\.\d+\.\d+"', "version = `"$version`"", 1)
+          [System.IO.File]::WriteAllText((Resolve-Path $cargoPath).Path, $cargo, [System.Text.UTF8Encoding]::new($false))
+
+          $configPath = "src-tauri/tauri.pr-test.conf.json"
+          $config = Get-Content $configPath -Raw | ConvertFrom-Json
+          $config | Add-Member -NotePropertyName version -NotePropertyValue $version -Force
+          $config | ConvertTo-Json -Depth 30 | Set-Content $configPath -Encoding utf8NoBOM
       - name: Frontend and command/workspace tests
         run: npm run build
       - name: Rust tests
