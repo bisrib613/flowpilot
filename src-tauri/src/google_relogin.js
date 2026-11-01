@@ -33,6 +33,17 @@
   }
 
   function skipVerification() {
+    // Do not leave the shared password in a field if a challenge appears.
+    if (passwordFillStarted) {
+      const current = passwordControl();
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, "value"
+      )?.set;
+      if (current && setter) {
+        setter.call(current, "");
+        current.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    }
     sessionStorage.removeItem(armKey);
     stop();
   }
