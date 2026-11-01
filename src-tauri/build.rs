@@ -2,8 +2,6 @@ fn main() {
     tauri_build::try_build(
         tauri_build::Attributes::new().app_manifest(
             tauri_build::AppManifest::new().commands(&[
-                "expand_main_window",
-                "open_external_url",
                 "get_download_folder",
                 "choose_download_folder",
                 "open_download_folder",
@@ -21,11 +19,6 @@ fn main() {
                 "complete_blob_download",
                 "cancel_blob_download",
                 "debug_trigger_isolated_dialog",
-                "get_device_id",
-                "get_license_state",
-                "activate_license",
-                "validate_license",
-                "clear_license_state",
                 "load_accounts",
                 "save_accounts",
             ]),
