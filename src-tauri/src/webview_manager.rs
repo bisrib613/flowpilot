@@ -426,7 +426,7 @@ fn open_view<R: Runtime>(
         .on_download(crate::native_downloads::handle)
         .on_page_load(move |webview, payload| {
             if let Some(id) = &relogin_source_id {
-                crate::google_relogin::on_page_load(webview.as_ref(), payload, id);
+                crate::google_relogin::on_page_load(&webview, payload, id);
             }
         })
         .on_navigation(|url| url.scheme() == "https" || url.scheme() == "blob")
