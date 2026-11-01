@@ -133,6 +133,7 @@ export default function App() {
   const [clearingAllCaches, setClearingAllCaches] = useState(false)
   const [addAccountOpen, setAddAccountOpen] = useState(false)
   const [newAccountName, setNewAccountName] = useState("")
+  const [googleAccountEmail, setGoogleAccountEmail] = useState("")
   const [flowSessionId, setFlowSessionId] = useState("")
   const [accountNameEdited, setAccountNameEdited] = useState(false)
   const [renamingAccount, setRenamingAccount] = useState<Account | null>(null)
@@ -149,6 +150,7 @@ export default function App() {
   const handleRename = (a: Account) => {
     setRenamingAccount(a)
     setNewAccountName(a.name)
+    setGoogleAccountEmail(a.email || "")
     setAddAccountError("")
     setAddAccountOpen(true)
     setMenu(null)
@@ -229,6 +231,7 @@ export default function App() {
     setFlowSessionId("")
     setAccountNameEdited(false)
     setNewAccountName("")
+    setGoogleAccountEmail("")
     setAddAccountError("")
     setAddAccountOpen(true)
   }
@@ -242,8 +245,16 @@ export default function App() {
       setAddAccountError("Account name must be 80 characters or fewer.")
       return
     }
+    const googleEmail = googleAccountEmail.trim().toLowerCase()
+    if ((renamingAccount ? serviceOf(renamingAccount) : activeService) === "flow" && googleEmail &&
+        !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(googleEmail)) {
+      setAddAccountError("Enter a valid Google email, or leave it blank.")
+      return
+    }
     if (renamingAccount) {
-      setAccounts((current) => current.map((account) => account.id === renamingAccount.id ? { ...account, name } : account))
+      setAccounts((current) => current.map((account) => account.id === renamingAccount.id
+        ? { ...account, name, ...(serviceOf(account) === "flow" ? { email: googleEmail || null } : {}) }
+        : account))
       setAddAccountOpen(false)
       setRenamingAccount(null)
       return
@@ -260,7 +271,7 @@ export default function App() {
     const a: Account = {
       id: crypto.randomUUID(),
       name,
-      email: null,
+      email: activeService === "flow" ? googleEmail || null : null,
       avatarUrl: SERVICES[activeService].logo,
       avatar: "NF",
       favorite: false,
@@ -608,6 +619,7 @@ export default function App() {
           </nav>
           {settingsTab === "general" ? <>
           <DownloadSettings />
+          <GoogleReLoginSettings />
           <section className="preload-setting">
             <div><h2>Account preload</h2><p>Keep up to this many accounts ready on each side of the current profile, per service. More accounts use more memory.</p></div>
             <label htmlFor="preload-sides">Accounts per side</label>
@@ -726,7 +738,16 @@ export default function App() {
                 placeholder="Enter account name"
                 maxLength={80}
               />
-              {addAccountError && <p className="dialog-error">{addAccountError}</p>}
+              {(renamingAccount ? serviceOf(renamingAccount) : activeService) === "flow" && (
+                 <>
+                   <label className="field-label" htmlFor="google-account-email">Google email (optional)</label>
+                   <input id="google-account-email" type="email" value={googleAccountEmail}
+                     onChange={(event) => setGoogleAccountEmail(event.target.value)}
+                     placeholder="email@gmail.com" maxLength={254} />
+                   <p className="session-note">For matching an already-recognized account when Google shows multiple identities. If blank, auto re-login chooses only when exactly one is shown.</p>
+                 </>
+               )}
+               {addAccountError && <p className="dialog-error">{addAccountError}</p>}
               <div className="dialog-actions">
                 <button className="secondary" onClick={() => setAddAccountOpen(false)}>
                   Cancel
@@ -1160,8 +1181,8 @@ function Settings({
           <div className="eyebrow">PRIVACY & SECURITY</div>
           <h2>Your data stays local</h2>
           <p>
-            Flowpilot stores account metadata on this device. Google passwords
-            and credentials are never captured.
+            Flowpilot stores account metadata locally. Google re-login is optional;
+            its shared password is saved in Windows Credential Manager, not in account files.
           </p>
         </div>
         <span className="badge">LOCAL ONLY</span>
@@ -1194,6 +1215,73 @@ function Settings({
         </div>
       </section>
     </div>
+  )
+}
+function GoogleReLoginSettings() {
+  const [enabled, setEnabled] = useState(false)
+  const [password, setPassword] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState("")
+  useEffect(() => {
+    let active = true
+    void invoke<boolean>("google_relogin_status").then((value) => {
+      if (active) setEnabled(value)
+    }).catch((error) => {
+      if (active) setMessage(`Credential Manager unavailable: ${String(error)}`)
+    })
+    return () => { active = false }
+  }, [])
+  const save = async () => {
+    if (!password) return
+    setBusy(true)
+    setMessage("")
+    try {
+      await invoke("google_relogin_save_password", { password })
+      setEnabled(true)
+      setPassword("")
+      setMessage("Google Flow re-login is enabled.")
+    } catch (error) {
+      setMessage(`Could not save password: ${String(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+  const disable = async () => {
+    setBusy(true)
+    setMessage("")
+    try {
+      await invoke("google_relogin_disable")
+      setEnabled(false)
+      setPassword("")
+      setMessage("Google Flow re-login is disabled.")
+    } catch (error) {
+      setMessage(`Could not disable re-login: ${String(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <section className="preload-setting">
+      <div>
+        <h2>Google Flow auto re-login</h2>
+        <p>Only after Google shows an already-recognized account chooser. Fresh login and additional verification are not automated. The password is shared across Flow profiles and stored in Windows Credential Manager.</p>
+        <p>Status: <strong>{enabled ? "Enabled" : "Disabled"}</strong></p>
+      </div>
+      <label htmlFor="google-relogin-password">Shared Google password</label>
+      <input id="google-relogin-password" type="password" autoComplete="new-password"
+        value={password} disabled={busy} maxLength={1024}
+        onChange={(event) => setPassword(event.target.value)}
+        placeholder={enabled ? "Enter new password to replace saved one" : "Enter password to enable"} />
+      <div className="dialog-actions">
+        <button className="primary" disabled={busy || !password} onClick={() => void save()}>
+          {enabled ? "Replace password" : "Enable re-login"}
+        </button>
+        {enabled && <button className="secondary" disabled={busy} onClick={() => void disable()}>
+          Disable re-login
+        </button>}
+      </div>
+      {message && <p role="status">{message}</p>}
+    </section>
   )
 }
 function DownloadSettings() {
