@@ -5,7 +5,7 @@ const vm = require("node:vm")
 
 const source = fs.readFileSync("src-tauri/src/google_relogin.js", "utf8")
 
-function environment({ origin = "https://accounts.google.com", expected = "", choices = [], passwordPage = false, storage = new Map() } = {}) {
+function environment({ origin = "https://accounts.google.com", pathname = "/signin", expected = "", choices = [], passwordPage = false, captcha = false, storage = new Map() } = {}) {
   let chooserClicks = []
   let passwordSubmissions = 0
   class Element {
@@ -30,13 +30,15 @@ function environment({ origin = "https://accounts.google.com", expected = "", ch
     querySelector() { return null }
   }
   const next = new Next()
-  const win = { location: { origin } }
+  const win = { location: { origin, pathname } }
   win.top = win.self = win
   const context = {
     window: win, HTMLElement: Element, HTMLInputElement: Input,
     document: {
       documentElement: {},
-      querySelectorAll: () => passwordPage ? [] : choices.map(x => new Choice(x)),
+      querySelectorAll: (selector) => selector.includes('iframe[src*="recaptcha"]')
+        ? (captcha ? [new Element()] : [])
+        : passwordPage ? [] : choices.map(x => new Choice(x)),
       querySelector: (selector) => !passwordPage ? null :
         selector === 'input[type="password"]' ? input :
         selector === '#passwordNext' ? next : null
@@ -88,4 +90,33 @@ test("no recognized identity matching the configured email means no action", () 
 test("script does not run on other origins", () => {
   const result = environment({ origin: "https://claude.ai", choices: ["one@gmail.com"] })
   assert.deepEqual(result.chooserClicks, [])
+})
+
+test("CAPTCHA blocks normal recognized chooser without clicking", () => {
+  const result = environment({ captcha: true, expected: "one@gmail.com", choices: ["one@gmail.com"] })
+  assert.deepEqual(result.chooserClicks, [])
+  assert.equal(result.storage.size, 0)
+})
+
+test("CAPTCHA skips previously armed password page and clears selection", () => {
+  const storage = new Map()
+  const chooser = environment({ expected: "one@gmail.com", choices: ["one@gmail.com"], storage })
+  assert.deepEqual(chooser.chooserClicks, ["one@gmail.com"])
+  const blocked = environment({ expected: "one@gmail.com", captcha: true, passwordPage: true, storage })
+  assert.equal(blocked.passwordInput.value, "")
+  assert.equal(blocked.passwordSubmissions, 0)
+  assert.equal(storage.size, 0)
+})
+
+test("other Google verification challenge is skipped", () => {
+  const result = environment({ pathname: "/v3/signin/challenge/totp", expected: "one@gmail.com", choices: ["one@gmail.com"] })
+  assert.deepEqual(result.chooserClicks, [])
+})
+
+test("normal password challenge path remains allowed", () => {
+  const storage = new Map()
+  environment({ expected: "one@gmail.com", choices: ["one@gmail.com"], storage })
+  const result = environment({ pathname: "/v3/signin/challenge/pwd", expected: "one@gmail.com", passwordPage: true, storage })
+  assert.equal(result.passwordInput.value, "test-secret")
+  assert.equal(result.passwordSubmissions, 1)
 })
