@@ -26,6 +26,7 @@ pub fn save_accounts<R: Runtime>(
     app: AppHandle<R>,
     accounts: serde_json::Value,
 ) -> Result<(), String> {
+    let _guard = ACCOUNTS_LOCK.lock().map_err(|_| "Account storage lock unavailable")?;
     let file = path(&app)?;
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -38,8 +39,6 @@ pub fn save_accounts<R: Runtime>(
         // Windows requires the existing file to be removed or replaced explicitly.
         #[cfg(windows)]
         if file.exists() {
-            use std::os::windows::fs::MetadataExt;
-            let _ = fs::metadata(&file).map(|metadata| metadata.file_attributes());
             // Preserve a recoverable backup if the final rename fails.
             let backup = file.with_extension("json.bak");
             fs::copy(&file, backup).map_err(|e| e.to_string())?;
@@ -47,6 +46,10 @@ pub fn save_accounts<R: Runtime>(
         }
         fs::rename(&temp, &file).map_err(|e| e.to_string())
     })();
-    if result.is_err() { let _ = fs::remove_file(&temp); }
+    if result.is_err() {
+        let backup = file.with_extension("json.bak");
+        if !file.exists() && backup.exists() { let _ = fs::copy(&backup, &file); }
+        let _ = fs::remove_file(&temp);
+    }
     result
 }
