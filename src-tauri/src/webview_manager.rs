@@ -635,6 +635,14 @@ pub fn finish_flow_profile_check<R: Runtime>(app: &AppHandle<R>, account_id: Str
     let key = profile_key("flow", &account_id)?;
     let _lock = state.operation.lock().map_err(|_| "webview state unavailable")?;
     let label = webview_label(&key);
+    // Close temporary OAuth popups too. Do not leave CAPTCHA/verification
+    // windows open when scanning the next profile.
+    let popup_prefix = format!("{label}-popup-");
+    for (popup_label, popup) in app.webview_windows() {
+        if popup_label.starts_with(&popup_prefix) {
+            popup.close().map_err(|error| error.to_string())?;
+        }
+    }
     if let Some(view) = app.get_webview(&label) {
         view.close().map_err(|error| error.to_string())?;
     }
