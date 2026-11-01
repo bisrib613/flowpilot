@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 mod account_store;
+mod google_relogin;
 mod webview_manager;
 mod native_downloads;
 mod download_settings;
@@ -177,6 +178,9 @@ pub fn run() {
             dialog_thread_experiment::debug_trigger_isolated_dialog,
             #[cfg(all(windows, feature = "diag"))]
             webview_download_bridge::diagnostic_save_file,
+            google_relogin::google_relogin_status,
+            google_relogin::google_relogin_save_password,
+            google_relogin::google_relogin_disable,
             account_store::load_accounts,
             account_store::save_accounts
         ])
