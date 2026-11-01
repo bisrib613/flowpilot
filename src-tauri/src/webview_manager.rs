@@ -650,7 +650,6 @@ pub fn navigate_service_bookmark<R: Runtime>(
 
 pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>, service: Option<String>) -> Result<(), String> {
     let state = app.state::<WebviewManager>();
-    cancel_preloads(&state)?;
     let operation = state
         .operation
         .lock()
@@ -669,15 +668,13 @@ pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>, service
             .as_deref()
             .map_or(true, |_| requested_key.as_deref() == Some(active_id.as_str()))
         {
+            cancel_preloads(&state)?;
             if let Some(webview) = app.get_webview(&webview_label(&active_id)) {
                 webview.hide().map_err(|e| e.to_string())?;
             }
+            *state.visible.lock().map_err(|_| "webview state unavailable")? = false;
         }
     }
-    *state
-        .visible
-        .lock()
-        .map_err(|_| "webview state unavailable")? = false;
     drop(operation);
     Ok(())
 }
