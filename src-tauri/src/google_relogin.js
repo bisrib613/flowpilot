@@ -12,8 +12,29 @@
   const isVisible = (element) =>
     element instanceof HTMLElement && element.getClientRects().length > 0;
 
+  // A normal password challenge can use /challenge/pwd; never block that
+  // route. Everything else needing an extra Google challenge is left alone.
+  const isVerificationChallenge = () => {
+    const pathname = window.location.pathname || "";
+    if (/\\/(?:captcha|recaptcha|sorry)(?:\\/|$)/i.test(pathname)) return true;
+    if (/\\/challenge(?:\\/|$)/i.test(pathname) &&
+        !/\\/challenge\\/pwd(?:\\/|$)/i.test(pathname)) return true;
+    const widgets = document.querySelectorAll(
+      'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[title*="captcha" i], ' +
+      '[data-sitekey], .g-recaptcha, .h-captcha, [aria-label*="captcha" i]'
+    );
+    return Array.from(widgets).some(isVisible);
+  };
+
   function run() {
     if (finished) return;
+    if (isVerificationChallenge()) {
+      // Skip this profile. Never click account/password controls or retry.
+      sessionStorage.removeItem(armKey);
+      finished = true;
+      observer?.disconnect();
+      return;
+    }
     let armed = null;
     try {
       armed = JSON.parse(sessionStorage.getItem(armKey) || "null");
