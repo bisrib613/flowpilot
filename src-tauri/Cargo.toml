@@ -19,6 +19,7 @@ tauri-plugin-process = "2"
 tauri-plugin-dialog = "2"
 rfd = "0.16"
 base64 = "0.22"
+keyring = { version = "3", features = ["windows-native"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38.2"
