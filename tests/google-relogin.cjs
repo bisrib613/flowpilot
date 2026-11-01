@@ -16,6 +16,8 @@ function environment({
   captcha = false,
   inputCount = 1,
   buttonCount = 1,
+  buttonDisabled = false,
+  buttonEnablesAfter = 0,
   storage = new Map(),
   emailAttribute = "data-identifier",
   password = "test-secret"
@@ -24,6 +26,8 @@ function environment({
   const submitted = []
   const timers = []
   const observers = []
+  let clock = Date.now()
+  class Clock extends Date { static now() { return clock } }
   let currentStage = stage
   let challenge = captcha
   let currentPath = pathname
@@ -54,12 +58,14 @@ function environment({
     dispatchEvent(event) { this.events.push(event.type) }
   }
   class Button extends Element {
-    matches(selector) { return selector === "button" }
-    click() { submitted.push("clicked") }
+    constructor() { super(); this.disabled = buttonDisabled }
+    matches(selector) { return selector.includes("button") }
+    click() { if (!this.disabled) submitted.push("clicked") }
   }
   const inputs = Array.from({ length: inputCount }, () => new Input())
   const buttons = Array.from({ length: buttonCount }, () => new Button())
   const choiceNodes = choices.map(value => new Choice(value))
+  const startedAt = clock
   const window = { location: { origin, pathname: currentPath } }
   window.self = window
   window.top = window
@@ -95,7 +101,7 @@ function environment({
       removeItem: key => storage.delete(key)
     },
     Event: class { constructor(type) { this.type = type } },
-    Date, JSON, setTimeout: callback => { timers.push(callback) }
+    Date: Clock, JSON, setTimeout: (callback, delay) => { timers.push({ callback, delay }) }
   }
   const compiled = source
     .replace("__FLOWPILOT_EMAIL__", JSON.stringify(expected))
@@ -110,7 +116,18 @@ function environment({
       for (const observer of observers) if (observer.connected) observer.callback()
     },
     captcha(value) { challenge = value; for (const o of observers) if (o.connected) o.callback() },
-    flush() { while (timers.length) timers.shift()() },
+    flush() {
+      let executions = 0
+      while (timers.length) {
+        if (++executions > 120) throw new Error("Timer loop did not settle")
+        const task = timers.shift()
+        clock += task.delay
+        if (buttonEnablesAfter && clock - startedAt >= buttonEnablesAfter) {
+          for (const button of buttons) button.disabled = false
+        }
+        task.callback()
+      }
+    },
     connectedObservers() { return observers.filter(o => o.connected).length }
   }
 }
@@ -233,4 +250,29 @@ test("other origins and stale selected identities cannot receive password", () =
   stale.flush()
   assert.equal(stale.inputs[0].value, "")
   assert.equal(stale.submitted.length, 0)
+})
+
+test("Google Next button initially disabled is clicked once after becoming enabled", () => {
+  const app = environment({ buttonDisabled: true, buttonEnablesAfter: 1000 })
+  app.transition("password", "/v3/signin/challenge/pwd")
+  assert.equal(app.inputs[0].value, "test-secret")
+  app.flush()
+  assert.equal(app.submitted.length, 1)
+})
+
+test("Google Next button permanently disabled never submits", () => {
+  const app = environment({ buttonDisabled: true })
+  app.transition("password", "/v3/signin/challenge/pwd")
+  app.flush()
+  assert.equal(app.inputs[0].value, "test-secret")
+  assert.equal(app.submitted.length, 0)
+})
+
+test("Google Next is never double-clicked after button becomes ready", () => {
+  const app = environment({ buttonDisabled: true, buttonEnablesAfter: 750 })
+  app.transition("password", "/v3/signin/challenge/pwd")
+  app.flush()
+  app.transition("password", "/v3/signin/challenge/pwd")
+  app.flush()
+  assert.equal(app.submitted.length, 1)
 })
