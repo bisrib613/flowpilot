@@ -8,12 +8,12 @@ export type StoredAccount = {
   avatar: string
   favorite: boolean
   order: number
-  service?: "flow" | "dola" | "leonardo" | "chatgpt" | "migoo"
+  service?: "flow" | "dola" | "leonardo" | "chatgpt" | "migoo" | "claude"
   flowSessionId?: string
 }
 
 const STORAGE_KEY = "flowpilot-accounts"
-const SERVICES = new Set(["flow", "dola", "leonardo", "chatgpt", "migoo"])
+const SERVICES = new Set(["flow", "dola", "leonardo", "chatgpt", "migoo", "claude"])
 
 function isAccount(value: unknown): value is StoredAccount {
   if (!value || typeof value !== "object") return false
