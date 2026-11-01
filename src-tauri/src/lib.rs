@@ -1,8 +1,6 @@
 use std::time::Duration;
-use tauri::Manager;
 
 mod account_store;
-mod license_store;
 mod webview_manager;
 mod native_downloads;
 mod download_settings;
@@ -148,43 +146,8 @@ async fn clear_google_flow_cache(
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
-    if url != "https://tokotelegram.com/toko/flowpilot" {
-        return Err("unsupported external URL".to_string());
-    }
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "", &url])
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn expand_main_window(app: tauri::AppHandle) -> Result<(), String> {
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "main window not found".to_string())?;
-    window.set_resizable(true).map_err(|e| e.to_string())?;
-    window
-        .set_size(tauri::Size::Physical(tauri::PhysicalSize {
-            width: 1280,
-            height: 800,
-        }))
-        .map_err(|e| e.to_string())?;
-    window
-        .set_min_size(Some(tauri::Size::Physical(tauri::PhysicalSize {
-            width: 1000,
-            height: 700,
-        })))
-        .map_err(|e| e.to_string())?;
-    window.center().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    dialog_thread_experiment::init();
     tauri::Builder::default()
         .setup(|app| {
             automation_bridge::start(app.handle().clone()).map_err(std::io::Error::other)?;
@@ -195,8 +158,6 @@ pub fn run() {
         .manage(webview_manager::WebviewManager::default())
         .manage(webview_download_bridge::DownloadState::default())
         .invoke_handler(tauri::generate_handler![
-            expand_main_window,
-            open_external_url,
             download_settings::get_download_folder,
             download_settings::choose_download_folder,
             download_settings::open_download_folder,
@@ -216,11 +177,6 @@ pub fn run() {
             dialog_thread_experiment::debug_trigger_isolated_dialog,
             #[cfg(all(windows, feature = "diag"))]
             webview_download_bridge::diagnostic_save_file,
-            license_store::get_device_id,
-            license_store::get_license_state,
-            license_store::activate_license,
-            license_store::validate_license,
-            license_store::clear_license_state,
             account_store::load_accounts,
             account_store::save_accounts
         ])
