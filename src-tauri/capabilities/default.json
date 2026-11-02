@@ -27,6 +27,7 @@
     "allow-google-relogin-status",
     "allow-google-relogin-save-password",
     "allow-google-relogin-disable",
-    "allow-check-flow-profile"
+    "allow-check-flow-profile",
+    "allow-run-bulk-shared-login"
   ]
 }
