@@ -627,6 +627,105 @@ pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: Strin
     Ok(port)
 }
 
+// Bulk sharing only creates service WebViews that reference existing Flow
+// directories. Never delete or clear a source profile during the batch.
+pub fn begin_bulk_shared_login<R: Runtime>(
+    app: &AppHandle<R>, account_id: String, service: String,
+) -> Result<bool, String> {
+    if service == "flow" { return Err("Bulk shared login needs a destination service".into()); }
+    let key = profile_key(&service, &account_id)?;
+    let accounts = crate::account_store::load_accounts(app.clone())?
+        .ok_or("Account storage unavailable")?;
+    let rows = accounts.as_array().ok_or("Invalid account storage")?;
+    let account = rows.iter().find(|row|
+        row.get("id").and_then(|v| v.as_str()) == Some(account_id.as_str()) &&
+        row.get("service").and_then(|v| v.as_str()) == Some(service.as_str())
+    ).ok_or("Linked destination account was not saved")?;
+    let source_id = account.get("flowSessionId").and_then(|v| v.as_str())
+        .ok_or("Account does not have a linked Flow session")?;
+    let source_exists = rows.iter().any(|row|
+        row.get("id").and_then(|v| v.as_str()) == Some(source_id) &&
+        row.get("service").and_then(|v| v.as_str()).unwrap_or("flow") == "flow"
+    );
+    if !source_exists || !profile_path(app, &profile_key("flow", source_id)?)?.exists() {
+        return Err("invalid_flow_session".into());
+    }
+    let created = app.get_webview(&webview_label(&key)).is_none();
+    open_view(app, account_id, service, 0.0, 0.0, 980.0, 720.0, true)?;
+    Ok(created)
+}
+
+// Only evaluate our local, fixed scripts on the matching service or Google
+// chooser. Remote pages never receive native Tauri capabilities or secrets.
+pub fn evaluate_bulk_shared_login<R: Runtime>(
+    app: &AppHandle<R>, account_id: String, service: String,
+    expected_email: String, click_enabled: bool,
+) -> Result<Vec<std::sync::mpsc::Receiver<String>>, String> {
+    let key = profile_key(&service, &account_id)?;
+    let label = webview_label(&key);
+    let mut responses = Vec::new();
+    let mut evaluate = |view: &tauri::Webview<R>| -> Result<(), String> {
+        let url = view.url().map_err(|e| e.to_string())?;
+        if url.scheme() != "https" { return Ok(()); }
+        let host = url.host_str().unwrap_or("");
+        let google = host == "accounts.google.com";
+        let allowed = match service.as_str() {
+            "claude" => matches!(host, "claude.ai"),
+            "chatgpt" => matches!(host, "chatgpt.com" | "auth.openai.com"),
+            "leonardo" => matches!(host, "app.leonardo.ai" | "leonardo.ai"),
+            "dola" => matches!(host, "www.dola.com" | "dola.com"),
+            "migoo" => matches!(host, "migoo.ai" | "www.migoo.ai"),
+            _ => false,
+        };
+        if !google && !allowed { return Ok(()); }
+        let js = if google {
+            include_str!("bulk_shared_google_chooser.js")
+                .replace("__FLOWPILOT_EXPECTED_EMAIL__", &serde_json::to_string(&expected_email).map_err(|e| e.to_string())?)
+                .replace("__FLOWPILOT_CAN_CLICK__", if click_enabled { "true" } else { "false" })
+        } else {
+            include_str!("bulk_shared_service_login.js")
+                .replace("__FLOWPILOT_SERVICE__", &serde_json::to_string(&service).map_err(|e| e.to_string())?)
+                .replace("__FLOWPILOT_CAN_CLICK__", if click_enabled { "true" } else { "false" })
+        };
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        view.eval_with_callback(js, move |result| {
+            let _ = tx.send(result);
+        }).map_err(|e| e.to_string())?;
+        responses.push(rx);
+        Ok(())
+    };
+    if let Some(view) = app.get_webview(&label) { evaluate(&view)?; }
+    for (popup_label, popup) in app.webview_windows() {
+        if popup_label.starts_with(&format!("{label}-popup-")) {
+            evaluate(popup.as_ref())?;
+        }
+    }
+    Ok(responses)
+}
+
+pub fn finish_bulk_shared_login<R: Runtime>(
+    app: &AppHandle<R>, account_id: String, service: String, created: bool,
+) -> Result<(), String> {
+    let key = profile_key(&service, &account_id)?;
+    let state = app.state::<WebviewManager>();
+    let _lock = state.operation.lock().map_err(|_| "webview state unavailable")?;
+    let label = webview_label(&key);
+    // Any lingering batch OAuth popup is specific to this destination account.
+    for (popup_label, popup) in app.webview_windows() {
+        if popup_label.starts_with(&format!("{label}-popup-")) {
+            popup.close().map_err(|error| error.to_string())?;
+        }
+    }
+    if created {
+        if let Some(view) = app.get_webview(&label) {
+            view.close().map_err(|error| error.to_string())?;
+        }
+        state.cached_accounts.lock().map_err(|_| "webview state unavailable")?.remove(&key);
+        state.automation_ports.lock().map_err(|_| "webview state unavailable")?.remove(&key);
+    }
+    Ok(())
+}
+
 const FLOW_CHECK_URL: &str = "https://flow.google.com/";
 
 // A manual re-login scan opens at most one temporary profile at a time.
