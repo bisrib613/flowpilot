@@ -999,16 +999,8 @@ function Sidebar({
         <SidebarIcon name="settings" /><span>Settings</span>
       </button>
       <div className="side-bottom">
-        <div className="avatar">
-          {profile.avatar ? (
-            <img src={profile.avatar} alt="Flowpilot profile" />
-          ) : (
-            profile.name.slice(0, 2).toUpperCase()
-          )}
-        </div>
-        <div>
-          <div className="side-license-info"><small><span>OPEN SOURCE · {profile.name}</span></small></div>
-        </div>
+        <img className="owner-avatar" src="/kuntyy-profile.svg" alt="" aria-hidden="true" />
+        <span className="owner-label">I'M Kuntyy</span>
       </div>
     </aside>
   )
