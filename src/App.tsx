@@ -355,7 +355,8 @@ export default function App() {
       login_button_not_found: "Google sign-in button not found",
     }
     try {
-      for (const [index, account] of additions.entries()) {
+      for (let index = 0; index < additions.length; index++) {
+        const account = additions[index]
         if (bulkShareStop.current) {
           setBulkShareResults((current) => ({ ...current, [account.id]: "Stopped" }))
           continue
