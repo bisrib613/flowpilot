@@ -1,4 +1,5 @@
 use std::time::Duration;
+use tauri::Emitter;
 
 mod account_store;
 mod google_relogin;
@@ -229,6 +230,7 @@ async fn check_flow_profile(app: tauri::AppHandle, account_id: String) -> Result
     }.await;
     // A temporary check WebView is never retained across profiles.
     // A user-opened view remains intact.
+    let keep_consent_popup = matches!(&result, Ok("consent_required"));
     let finish_app = app.clone();
     let finish_id = account_id;
     let cleanup = run_on_ui_thread(&app, move || {
@@ -272,7 +274,10 @@ async fn run_bulk_shared_login(
     let result = async {
         let mut service_google_clicked = false;
         let mut saw_entry = false;
-        for _ in 0..35 {
+        let mut consent_pending = false;
+        // A first-time Google OAuth consent needs a human click. Keep polling
+        // rather than closing the dialog while the user reads the permission.
+        for _ in 0..120 {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let poll_app = app.clone();
             let poll_id = account_id.clone();
@@ -298,6 +303,14 @@ async fn run_bulk_shared_login(
             // Prefer success over a stale popup. Otherwise fail closed on
             // Google session loss or an unrecognized chooser.
             if signals.iter().any(|s| s == "signed_in") { return Ok("signed_in"); }
+            if signals.iter().any(|s| s == "consent_required") && !consent_pending {
+                consent_pending = true;
+                // No emails, Google page text, tokens or credentials are sent.
+                let _ = app.emit_to("main", "flowpilot-bulk-login-action", serde_json::json!({
+                    "accountId": account_id,
+                    "status": "consent_required"
+                }));
+            }
             if signals.iter().any(|s| s == "invalid_session") { return Ok("invalid_session"); }
             if signals.iter().any(|s| s == "needs_attention") { return Ok("needs_attention"); }
             if signals.iter().any(|s| s == "google_clicked") {
@@ -307,7 +320,8 @@ async fn run_bulk_shared_login(
                 saw_entry = true;
             }
         }
-        Ok(if service_google_clicked || saw_entry { "login_unconfirmed" }
+        Ok(if consent_pending { "consent_required" }
+            else if service_google_clicked || saw_entry { "login_unconfirmed" }
             else { "login_button_not_found" })
     }.await;
 
@@ -317,6 +331,7 @@ async fn run_bulk_shared_login(
     let cleanup = run_on_ui_thread(&app, move || {
         webview_manager::finish_bulk_shared_login(
             &finish_app, finish_id, finish_service, created,
+            keep_consent_popup,
         )
     }).await;
     match (result, cleanup) {
