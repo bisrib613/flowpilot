@@ -230,7 +230,6 @@ async fn check_flow_profile(app: tauri::AppHandle, account_id: String) -> Result
     }.await;
     // A temporary check WebView is never retained across profiles.
     // A user-opened view remains intact.
-    let keep_consent_popup = matches!(&result, Ok("consent_required"));
     let finish_app = app.clone();
     let finish_id = account_id;
     let cleanup = run_on_ui_thread(&app, move || {
@@ -327,6 +326,7 @@ async fn run_bulk_shared_login(
             else { "login_button_not_found" })
     }.await;
 
+    let keep_consent_popup = matches!(&result, Ok("consent_required"));
     let finish_app = app.clone();
     let finish_id = account_id;
     let finish_service = service;
