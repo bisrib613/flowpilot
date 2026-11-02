@@ -475,6 +475,10 @@ fn open_view<R: Runtime>(
             .set_size(tauri::LogicalSize::new(width, height))
             .map_err(|e| e.to_string())?;
         webview.show().map_err(|e| e.to_string())?;
+        // Restoring a hidden child WebView does not necessarily restore
+        // Windows input focus. Clipboard and user-gesture downloads depend
+        // on the active view receiving the actual pointer/keyboard action.
+        webview.set_focus().map_err(|e| e.to_string())?;
         *state
             .active_account_id
             .lock()
