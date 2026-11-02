@@ -277,7 +277,9 @@ async fn run_bulk_shared_login(
         let mut consent_pending = false;
         // A first-time Google OAuth consent needs a human click. Keep polling
         // rather than closing the dialog while the user reads the permission.
-        for _ in 0..120 {
+        for attempt in 0..120 {
+            // Keep the original short timeout if no consent is involved.
+            if attempt >= 35 && !consent_pending { break; }
             tokio::time::sleep(Duration::from_secs(1)).await;
             let poll_app = app.clone();
             let poll_id = account_id.clone();
