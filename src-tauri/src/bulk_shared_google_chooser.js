@@ -29,6 +29,7 @@
     }
     return "waiting";
   }
+  if (email && unique.size > 0) return "needs_attention";
   if (unique.size > 1) return "needs_attention";
   if ([...document.querySelectorAll('input[type="email"], input[name="identifierId"]')]
       .some(isVisible)) return "invalid_session";
