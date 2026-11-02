@@ -93,7 +93,7 @@ test("Google chooser only selects sole account when Flow email is unspecified", 
 })
 test("unrecognized Google identity cannot be selected", () => {
   const f = fixture({ host: "accounts.google.com", expected: "other@gmail.com", identities: ["one@gmail.com"] })
-  assert.equal(f.execute("google"), "waiting")
+  assert.equal(f.execute("google"), "needs_attention")
   assert.deepEqual(f.clicked, [])
 })
 test("password challenge is recognized as invalid shared session", () => {
