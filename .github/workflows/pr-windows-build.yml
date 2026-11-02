@@ -21,10 +21,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install frontend dependencies
         run: npm ci
-      - name: Set PR-only installer version (after v1.5.8 test build)
+      - name: Set PR-only installer version (after v1.5.9 test build)
         shell: pwsh
         run: |
-          $version = "1.5.9"
+          $version = "1.5.10"
           npm version $version --no-git-tag-version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
