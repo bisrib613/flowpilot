@@ -26,6 +26,7 @@ function fixture({ host = "claude.ai", path = "/", buttons = [],
   const inputNodes = inputs.map(type => new Element({ type }))
   const document = {
     querySelectorAll(selector) {
+      if (selector === 'button, [role="button"], input[type="submit"]') return buttonNodes
       if (selector === 'button, a, [role="button"]') return buttonNodes
       if (selector === '[data-identifier], [data-email]') return identityNodes
       if (selector.startsWith("input")) return inputNodes.filter(node =>
@@ -94,6 +95,37 @@ test("Google chooser only selects sole account when Flow email is unspecified", 
 test("unrecognized Google identity cannot be selected", () => {
   const f = fixture({ host: "accounts.google.com", expected: "other@gmail.com", identities: ["one@gmail.com"] })
   assert.equal(f.execute("google"), "needs_attention")
+  assert.deepEqual(f.clicked, [])
+})
+
+test("Google OAuth consent screen is recognized and no Continue button is auto-clicked", () => {
+  const f = fixture({
+    host: "accounts.google.com",
+    path: "/signin/oauth/consent",
+    buttons: ["Batal", "Lanjutkan"],
+    expected: "one@gmail.com",
+  })
+  assert.equal(f.execute("google"), "consent_required")
+  assert.deepEqual(f.clicked, [])
+})
+
+test("English Google consent also requires manual approval", () => {
+  const f = fixture({
+    host: "accounts.google.com",
+    path: "/o/oauth2/consent",
+    buttons: ["Cancel", "Continue"],
+  })
+  assert.equal(f.execute("google"), "consent_required")
+  assert.deepEqual(f.clicked, [])
+})
+
+test("untrusted consent lookalike is never acted on", () => {
+  const f = fixture({
+    host: "evil.invalid",
+    path: "/signin/oauth/consent",
+    buttons: ["Batal", "Lanjutkan"],
+  })
+  assert.equal(f.execute("google"), "waiting")
   assert.deepEqual(f.clicked, [])
 })
 test("password challenge is recognized as invalid shared session", () => {
