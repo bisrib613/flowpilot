@@ -19,8 +19,8 @@ const old = [
   { id: "b", name: "zeta", order: 1 },
   { id: "c", name: "beta 2", order: 2 }
 ]
-test("newest default reverses original order without changing existing records", () => {
-  assert.equal(exportsObject.readProfileSort("flow"), "newest")
+test("default keeps existing manual drag-and-drop order; newest is opt-in", () => {
+  assert.equal(exportsObject.readProfileSort("flow"), "manual")
   assert.deepEqual(sort(old, "newest"), ["c", "b", "a"])
   assert.deepEqual(old.map(a => a.order), [0, 1, 2])
   assert.deepEqual(sort(old, "manual"), ["a", "b", "c"])
@@ -55,7 +55,7 @@ test("bulk share excludes only Flow sessions already linked in current service",
 test("sort preference validates values and defaults safely", () => {
   for (const bad of ["arbitrary", "last", "", null]) {
     saved = bad
-    assert.equal(exportsObject.readProfileSort("claude"), "newest")
+    assert.equal(exportsObject.readProfileSort("claude"), "manual")
   }
   for (const valid of ["newest", "recent", "oldest", "name_asc", "name_desc", "manual"]) {
     saved = valid
