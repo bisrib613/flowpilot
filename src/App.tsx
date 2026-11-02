@@ -618,7 +618,10 @@ export default function App() {
             fullView={fullView}
             onToggleFullView={() => setFullView((current) => !current)}
             onSelectAccount={(account) => {
-              if (account.id !== active.id) setActive(account)
+              if (account.id !== active.id) {
+                markProfileOpened(account)
+                setActive(account)
+              }
             }}
             onSaveBookmark={(id, name, url) => {
               const bookmarkService = serviceOf(active)
@@ -702,6 +705,17 @@ export default function App() {
           </div>
           {(view === "accounts" || view === "favorites") && (
             <div className="header-actions">
+              {view === "accounts" && (
+                <label className="profile-sort-wrap">
+                  <span>Sort</span>
+                  <select aria-label="Sort profiles" className="profile-sort" value={profileSort}
+                    onChange={(event) => changeProfileSort(event.target.value as ProfileSort)}>
+                    {PROFILE_SORT_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <div className="search">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg>
                 <input
@@ -716,6 +730,10 @@ export default function App() {
                   onClick={() => void checkAllFlowProfiles()}>
                   {flowScanRunning ? "Checking Flow profiles…" : "Check & Re-login All"}
                 </button>
+              )}
+              {view === "accounts" && activeService !== "flow" && (
+                <button className="secondary" disabled={!accountStorageReady || shareableSources.length === 0}
+                  onClick={openBulkShare}>+ Bulk share</button>
               )}
               {view === "accounts" && <button className="primary" disabled={!accountStorageReady || flowScanRunning} onClick={handleAddAccount}>
                 + Add account
@@ -782,6 +800,7 @@ export default function App() {
                   menuOpen={menu === a.id}
                   onMenu={() => setMenu(menu === a.id ? null : a.id)}
                   onOpen={() => {
+                    markProfileOpened(a)
                     setActiveService(serviceOf(a))
                     setActive(a)
                     setView("flow")
@@ -791,7 +810,7 @@ export default function App() {
                   onRename={() => handleRename(a)}
                   onClearCache={() => void handleClearAccountCache(a)}
                   cacheBusy={clearingCacheId === a.id || clearingAllCaches}
-                  dragEnabled={view === "accounts" && !query.trim()}
+                  dragEnabled={view === "accounts" && profileSort === "manual" && !query.trim()}
                   isDragging={draggingId === a.id}
                   dropPosition={
                     dragTargetId === a.id
@@ -825,6 +844,41 @@ export default function App() {
                 >
                   Delete account
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {bulkShareOpen && activeService !== "flow" && (
+          <div className="overlay">
+            <div className="dialog bulk-share-dialog" role="dialog" aria-modal="true" aria-labelledby="bulk-share-title">
+              <h2 id="bulk-share-title">Bulk share to {SERVICES[activeService].name}</h2>
+              <p>Select existing Google Flow profiles. Each source creates one linked
+                {SERVICES[activeService].shortName} profile without copying or deleting login data.</p>
+              <div className="bulk-share-actions">
+                <button className="secondary" type="button" onClick={() => setBulkShareSelected(shareableSources.map((a) => a.id))}>Select all</button>
+                <button className="secondary" type="button" onClick={() => setBulkShareSelected([])}>Clear</button>
+                <span>{bulkShareSelected.length} selected / {shareableSources.length} available</span>
+              </div>
+              <div className="bulk-share-source-list" role="group" aria-label="Google Flow source profiles">
+                {shareableSources.length === 0 ? <p>No unlinked Flow profiles available for this service.</p> :
+                  shareableSources.map((source) => (
+                    <label key={source.id} className="bulk-share-source">
+                      <input type="checkbox" checked={bulkShareSelected.includes(source.id)}
+                        onChange={(event) => setBulkShareSelected((current) =>
+                          event.target.checked
+                            ? [...current, source.id]
+                            : current.filter((id) => id !== source.id)
+                        )} />
+                      <span>{source.name}</span>
+                    </label>
+                  ))}
+              </div>
+              <p className="session-note">Sources already linked in this service are excluded. Sharing reuses
+                the original Flow session directory; it does not perform a fresh login.</p>
+              <div className="dialog-actions">
+                <button className="secondary" onClick={() => setBulkShareOpen(false)}>Cancel</button>
+                <button className="primary" disabled={!bulkShareSelected.length}
+                  onClick={createBulkSharedProfiles}>Add {bulkShareSelected.length} profiles</button>
               </div>
             </div>
           </div>
