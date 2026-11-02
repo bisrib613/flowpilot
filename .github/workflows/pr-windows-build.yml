@@ -27,10 +27,10 @@ jobs:
           # Unit tests, TypeScript and Vite do not require the heavy Cypress runtime.
           CYPRESS_INSTALL_BINARY: '0'
         run: npm ci
-      - name: Set PR-only installer version (after v1.5.10 test build)
+      - name: Set PR-only installer version (after v1.5.11 test build)
         shell: pwsh
         run: |
-          $version = "1.5.11"
+          $version = "1.5.12"
           npm version $version --no-git-tag-version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
