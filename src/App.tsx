@@ -7,7 +7,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
 import { neighborIndices, shortcutBounds, readPreloadSides } from "./services/workspace-policy"
 import { loadAccounts, saveAccounts } from "./services/account-store"
-import { availableSharedSources, PROFILE_SORT_OPTIONS, readProfileSort, sortProfileCards, type ProfileSort } from "./services/profile-features"
+import { availableSharedSources, defaultSortDirection, PROFILE_SORT_OPTIONS, readProfileSort, sortProfileCards, type ProfileSort, type ProfileSortKey } from "./services/profile-features"
 
 type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt" | "migoo" | "claude"
 type AppView = "accounts" | "favorites" | "settings" | "flow"
@@ -281,11 +281,16 @@ export default function App() {
     )
     setMenu(null)
   }
-  const changeProfileSort = (sort: ProfileSort) => {
+  const saveProfileSort = (sort: ProfileSort) => {
     setSortByService((current) => ({ ...current, [activeService]: sort }))
-    try { localStorage.setItem(`flowpilot-sort-${activeService}`, sort) } catch { /* optional preference */ }
+    try { localStorage.setItem(`flowpilot-sort-${activeService}`, `${sort.key}:${sort.direction}`) }
+    catch { /* optional preference */ }
     setDragOrderIds(null)
   }
+  const changeProfileSort = (key: ProfileSortKey) =>
+    saveProfileSort({ key, direction: defaultSortDirection(key) })
+  const reverseProfileSort = () =>
+    saveProfileSort({ ...profileSort, direction: profileSort.direction === "asc" ? "desc" : "asc" })
   const openBulkShare = () => {
     setBulkShareSelected([])
     setBulkShareOpen(true)
@@ -446,7 +451,7 @@ export default function App() {
     [accounts, serviceAccounts, query, view]
   )
   const displayed = useMemo(() => {
-    if (dragOrderIds && view === "accounts" && profileSort === "manual") {
+    if (dragOrderIds && view === "accounts" && profileSort.key === "manual") {
       const byId = new Map(visible.map((account) => [account.id, account]))
       return dragOrderIds.map((id) => byId.get(id)).filter(Boolean) as Account[]
     }
@@ -544,7 +549,7 @@ export default function App() {
     }
   }, [accounts, serviceAccounts])
   const beginPointerDrag = (id: string, event: React.PointerEvent<HTMLButtonElement>) => {
-    if (event.button !== 0 || view !== "accounts" || query.trim() || profileSort !== "manual") return
+    if (event.button !== 0 || view !== "accounts" || query.trim() || profileSort.key !== "manual") return
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
     dragSourceRef.current = event.currentTarget
@@ -706,15 +711,24 @@ export default function App() {
           {(view === "accounts" || view === "favorites") && (
             <div className="header-actions">
               {view === "accounts" && (
-                <label className="profile-sort-wrap">
-                  <span>Sort</span>
-                  <select aria-label="Sort profiles" className="profile-sort" value={profileSort}
-                    onChange={(event) => changeProfileSort(event.target.value as ProfileSort)}>
-                    {PROFILE_SORT_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
-                </label>
+                <div className="profile-sort-controls">
+                  <label className="profile-sort-wrap">
+                    <span>Sort</span>
+                    <select aria-label="Sort profiles" className="profile-sort" value={profileSort.key}
+                      onChange={(event) => changeProfileSort(event.target.value as ProfileSortKey)}>
+                      {PROFILE_SORT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {profileSort.key !== "manual" && (
+                    <button type="button" className="secondary profile-sort-direction" onClick={reverseProfileSort}
+                      aria-label={profileSort.direction === "asc" ? "Sort ascending. Switch to descending" : "Sort descending. Switch to ascending"}
+                      title={profileSort.direction === "asc" ? "Ascending · click for descending" : "Descending · click for ascending"}>
+                      {profileSort.direction === "asc" ? "↑" : "↓"}
+                    </button>
+                  )}
+                </div>
               )}
               <div className="search">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg>
