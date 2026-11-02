@@ -18,11 +18,16 @@ test("Flowpilot uses its non-destructive NSIS template in all Windows builds", (
 })
 
 test("running setup never executes a previous installation's uninstaller", () => {
-  const installer = template.slice(0, template.indexOf("Section Install"))
-  assert.doesNotMatch(installer, /ExecWait[^\n]*\$R1|\/UPDATE[^\n]*ExecWait/)
-  assert.match(installer, /Unable to compare Flowpilot versions safely/)
-  assert.match(installer, /Downgrading is blocked/)
-  assert.match(installer, /An older MSI installation/)
+  const begin = template.indexOf("Function FlowpilotCheckUpgrade")
+  const gate = template.slice(begin, template.indexOf("FunctionEnd", begin))
+  // WebView2's normal dependency installer also uses ExecWait. The security
+  // invariant is specific to the upgrade gate: it must never run ANY
+  // previous-uninstaller command or expose an uninstall selection.
+  assert.ok(begin >= 0)
+  assert.doesNotMatch(gate, /ExecWait|Goto reinst_uninstall|Uninstall before installing/)
+  assert.match(gate, /Unable to compare Flowpilot versions safely/)
+  assert.match(gate, /Downgrading is blocked/)
+  assert.match(gate, /An older MSI installation/)
 })
 
 test("app session data can only be deleted after explicit uninstall checkbox and confirmation", () => {
