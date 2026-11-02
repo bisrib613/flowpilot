@@ -429,6 +429,11 @@ fn open_view<R: Runtime>(
             .set_size(tauri::LogicalSize::new(width, height))
             .map_err(|e| e.to_string())?;
         webview.show().map_err(|e| e.to_string())?;
+        // A reused child WebView may remain unfocused after the host hid it.
+        // Restore focus without breaking the account view if Windows refuses it.
+        if let Err(error) = webview.set_focus() {
+            eprintln!("[flowpilot-webview] focus restore failed: {error}");
+        }
         *state
             .active_account_id
             .lock()
@@ -473,7 +478,15 @@ fn open_view<R: Runtime>(
         flow_builder(requested_label.clone(), url, profile, browser_args)
     } else {
         WebviewBuilder::new(requested_label.clone(), url).data_directory(profile)
-    }
+    };
+    // Grant clipboard access only to the two chat services that expose Copy UI.
+    // Keep all other services, including Google authentication, unchanged.
+    let builder = if matches!(service.as_str(), "chatgpt" | "claude") {
+        builder.enable_clipboard_access()
+    } else {
+        builder
+    };
+    let builder = builder
         .focused(!background)
         .on_download(crate::native_downloads::handle)
         .on_page_load(move |webview, payload| {
