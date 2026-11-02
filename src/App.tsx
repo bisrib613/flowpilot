@@ -153,6 +153,22 @@ export default function App() {
   const [bulkShareProgress, setBulkShareProgress] = useState("")
   const [bulkShareResults, setBulkShareResults] = useState<Record<string, string>>({})
   const bulkShareStop = useRef(false)
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void listen<{ accountId: string; status: string }>("flowpilot-bulk-login-action", (event) => {
+      if (event.payload.status === "consent_required") {
+        setBulkShareResults((current) => ({
+          ...current,
+          [event.payload.accountId]: "Google approval required — click Continue in the popup",
+        }))
+      }
+    }).then((stop) => {
+      if (disposed) stop()
+      else unlisten = stop
+    }).catch((error) => console.error("Bulk OAuth status listener failed", error))
+    return () => { disposed = true; unlisten?.() }
+  }, [])
   const [newAccountName, setNewAccountName] = useState("")
   const [googleAccountEmail, setGoogleAccountEmail] = useState("")
   const [flowSessionId, setFlowSessionId] = useState("")
@@ -351,6 +367,7 @@ export default function App() {
       signed_in: "Signed in",
       invalid_session: "Invalid Flow session",
       needs_attention: "Needs attention",
+      consent_required: "Google approval pending — popup left open",
       login_unconfirmed: "Login not confirmed",
       login_button_not_found: "Google sign-in button not found",
     }
@@ -380,7 +397,7 @@ export default function App() {
     } finally {
       setBulkShareProgress("")
       setBulkShareRunning(false)
-      setCacheNotice(`Created ${additions.length} shared ${SERVICES[service].shortName} profiles. Auto Google sign-in finished; review the results.`)
+      setCacheNotice(`Created ${additions.length} shared ${SERVICES[service].shortName} profiles. Check the sign-in results; Google may require manual consent.`)
     }
   }
   const markProfileOpened = (account: Account) => {
