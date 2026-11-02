@@ -1,6 +1,9 @@
 name: Verify Flowpilot PR (Windows)
 
 on:
+  # Temporary branch-only verification while PR event runners are not appearing.
+  push:
+    branches: [feat/claude-platform-relogin-scope-20261102]
   pull_request:
     types: [opened, reopened, synchronize]
   workflow_dispatch:
