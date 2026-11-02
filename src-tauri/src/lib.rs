@@ -255,6 +255,7 @@ async fn run_bulk_shared_login(
             row.get("id").and_then(|v| v.as_str()) == Some(account_id.as_str()) &&
             row.get("service").and_then(|v| v.as_str()) == Some(service.as_str())
         )).ok_or("Destination account not found")?;
+    let profile_name = linked.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let flow_id = linked.get("flowSessionId").and_then(|v| v.as_str())
         .ok_or("Destination is not linked to a Flow profile")?;
     let expected_email = source_accounts.as_array().and_then(|rows| rows.iter().find(|row|
@@ -274,19 +275,21 @@ async fn run_bulk_shared_login(
         let mut service_google_clicked = false;
         let mut saw_entry = false;
         let mut consent_pending = false;
+        let mut saw_consent = false;
         // A first-time Google OAuth consent needs a human click. Keep polling
         // rather than closing the dialog while the user reads the permission.
         for attempt in 0..120 {
             // Keep the original short timeout if no consent is involved.
-            if attempt >= 35 && !consent_pending { break; }
+            if attempt >= 35 && !saw_consent { break; }
             tokio::time::sleep(Duration::from_secs(1)).await;
             let poll_app = app.clone();
             let poll_id = account_id.clone();
             let poll_service = service.clone();
             let email = expected_email.clone();
+            let name = profile_name.clone();
             let responses = run_on_ui_thread(&app, move || {
                 webview_manager::evaluate_bulk_shared_login(
-                    &poll_app, poll_id, poll_service, email, !service_google_clicked,
+                    &poll_app, poll_id, poll_service, email, name, !service_google_clicked,
                 )
             }).await?;
             let mut signals = Vec::new();
@@ -304,8 +307,9 @@ async fn run_bulk_shared_login(
             // Prefer success over a stale popup. Otherwise fail closed on
             // Google session loss or an unrecognized chooser.
             if signals.iter().any(|s| s == "signed_in") { return Ok("signed_in"); }
-            if signals.iter().any(|s| s == "consent_required") && !consent_pending {
-                consent_pending = true;
+            consent_pending = signals.iter().any(|s| s == "consent_required");
+            if consent_pending && !saw_consent {
+                saw_consent = true;
                 // No emails, Google page text, tokens or credentials are sent.
                 let _ = app.emit_to("main", "flowpilot-bulk-login-action", serde_json::json!({
                     "accountId": account_id,
@@ -313,11 +317,15 @@ async fn run_bulk_shared_login(
                 }));
             }
             if signals.iter().any(|s| s == "invalid_session") { return Ok("invalid_session"); }
+            if signals.iter().any(|s| s == "verification_required") { return Ok("verification_required"); }
+            if signals.iter().any(|s| s == "signup_required") { return Ok("signup_required"); }
+            if signals.iter().any(|s| s == "onboarding_required") { return Ok("onboarding_required"); }
+            if signals.iter().any(|s| s == "reauth_required") { return Ok("reauth_required"); }
             if signals.iter().any(|s| s == "needs_attention") { return Ok("needs_attention"); }
             if signals.iter().any(|s| s == "google_clicked") {
                 service_google_clicked = true;
             }
-            if signals.iter().any(|s| s == "entry_clicked" || s == "chooser_clicked") {
+            if signals.iter().any(|s| matches!(s.as_str(), "entry_clicked" | "chooser_clicked" | "consent_clicked" | "signup_filled" | "signup_clicked" | "onboarding_clicked")) {
                 saw_entry = true;
             }
         }
@@ -326,14 +334,15 @@ async fn run_bulk_shared_login(
             else { "login_button_not_found" })
     }.await;
 
-    let keep_consent_popup = matches!(&result, Ok("consent_required"));
+    let keep_attention_view = matches!(&result, Ok("consent_required" | "verification_required" |
+        "signup_required" | "onboarding_required" | "reauth_required" | "needs_attention" | "invalid_session" | "login_unconfirmed"));
     let finish_app = app.clone();
     let finish_id = account_id;
     let finish_service = service;
     let cleanup = run_on_ui_thread(&app, move || {
         webview_manager::finish_bulk_shared_login(
             &finish_app, finish_id, finish_service, created,
-            keep_consent_popup,
+            keep_attention_view,
         )
     }).await;
     match (result, cleanup) {

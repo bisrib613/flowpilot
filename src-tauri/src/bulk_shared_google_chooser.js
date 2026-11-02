@@ -24,7 +24,29 @@
   const consentRoute = /(?:\/|^)(?:consent|oauthchooseaccount)(?:\/|$)/i.test(path);
   const summary = (document.body && document.body.innerText || "").slice(0, 5000);
   const consentText = /(?:mengizinkan.{0,100}mengakses|will allow.{0,100}access|sign in to|login ke)/i.test(summary);
-  if (hasApprove && (hasCancel || consentRoute || consentText)) return "consent_required";
+  if (hasApprove && (hasCancel || consentRoute || consentText)) {
+    // Only the returning-user confirmation reuses an existing Google grant.
+    // First-time profile/email authorization remains a user decision.
+    const heading = document.getElementById("headingText");
+    const returning = /^(?:Anda login kembali ke|You(?:[’']re| are) signing back in to)\s+/i
+      .test((heading && heading.textContent || "").trim());
+    const approve = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')]
+      .filter(node => isVisible(node) && !node.disabled &&
+        /^(?:lanjutkan|continue)$/i.test((node.innerText || node.textContent || "").trim()));
+    if (returning && /\/signin\/oauth\//.test(path) && approve.length === 1) {
+      const wanted = (expected || "").trim().toLowerCase();
+      const shown = new Set((summary.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || [])
+        .map(email => email.toLowerCase()));
+      if (wanted && (shown.size !== 1 || !shown.has(wanted))) return "needs_attention";
+      if (canClick && !window.__flowpilotConsentClicked) {
+        window.__flowpilotConsentClicked = true;
+        approve[0].click();
+        return "consent_clicked";
+      }
+      return "waiting";
+    }
+    return "consent_required";
+  }
   const password = [...document.querySelectorAll('input[type="password"]')].some(isVisible);
   if (password) return "invalid_session";
   const candidates = [...document.querySelectorAll('[data-identifier], [data-email]')]
@@ -48,7 +70,7 @@
   }
   if (email && unique.size > 0) return "needs_attention";
   if (unique.size > 1) return "needs_attention";
-  if ([...document.querySelectorAll('input[type="email"], input[name="identifierId"]')]
+  if ([...document.querySelectorAll('input[type="email"], input#identifierId, input[name="identifier"]')]
       .some(isVisible)) return "invalid_session";
   return "waiting";
 })(__FLOWPILOT_EXPECTED_EMAIL__, __FLOWPILOT_CAN_CLICK__);

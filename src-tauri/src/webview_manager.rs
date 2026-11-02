@@ -763,7 +763,7 @@ pub fn begin_bulk_shared_login<R: Runtime>(
 // chooser. Remote pages never receive native Tauri capabilities or secrets.
 pub fn evaluate_bulk_shared_login<R: Runtime>(
     app: &AppHandle<R>, account_id: String, service: String,
-    expected_email: String, click_enabled: bool,
+    expected_email: String, profile_name: String, click_enabled: bool,
 ) -> Result<Vec<std::sync::mpsc::Receiver<String>>, String> {
     let key = profile_key(&service, &account_id)?;
     let label = webview_label(&key);
@@ -789,6 +789,7 @@ pub fn evaluate_bulk_shared_login<R: Runtime>(
         } else {
             include_str!("bulk_shared_service_login.js")
                 .replace("__FLOWPILOT_SERVICE__", &serde_json::to_string(&service).map_err(|e| e.to_string())?)
+                .replace("__FLOWPILOT_PROFILE_NAME__", &serde_json::to_string(&profile_name).map_err(|e| e.to_string())?)
                 .replace("__FLOWPILOT_CAN_CLICK__", if click_enabled { "true" } else { "false" })
         };
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -809,15 +810,16 @@ pub fn evaluate_bulk_shared_login<R: Runtime>(
 
 pub fn finish_bulk_shared_login<R: Runtime>(
     app: &AppHandle<R>, account_id: String, service: String, created: bool,
-    preserve_consent_popup: bool,
+    preserve_attention_view: bool,
 ) -> Result<(), String> {
     let key = profile_key(&service, &account_id)?;
     let state = app.state::<WebviewManager>();
     let _lock = state.operation.lock().map_err(|_| "webview state unavailable")?;
     let label = webview_label(&key);
-    // Keep the OAuth window alive when the user has not yet approved
-    // the third-party access prompt. No credential/cookie data is touched.
-    if preserve_consent_popup { return Ok(()); }
+    // Keep pending consent, CAPTCHA and incomplete onboarding available.
+    // Closing the opener here would discard the user's current login stage.
+    // No credential/cookie data is touched.
+    if preserve_attention_view { return Ok(()); }
     // Any lingering batch OAuth popup is specific to this destination account.
     for (popup_label, popup) in app.webview_windows() {
         if popup_label.starts_with(&format!("{label}-popup-")) {

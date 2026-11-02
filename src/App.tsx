@@ -366,7 +366,11 @@ export default function App() {
     const statusLabels: Record<string, string> = {
       signed_in: "Signed in",
       invalid_session: "Invalid Flow session",
-      needs_attention: "Needs attention",
+      needs_attention: "Needs attention — open the profile to continue",
+      verification_required: "CAPTCHA required — open the profile to continue",
+      signup_required: "Signup needs attention — open the profile to continue",
+      onboarding_required: "Onboarding needs attention — open the profile to continue",
+      reauth_required: "Service requested sign-in again — open the profile",
       consent_required: "Google approval pending — popup left open",
       login_unconfirmed: "Login not confirmed",
       login_button_not_found: "Google sign-in button not found",
