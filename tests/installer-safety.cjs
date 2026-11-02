@@ -41,6 +41,23 @@ test("app session data can only be deleted after explicit uninstall checkbox and
   assert.match(template, /\$UpdateMode <> 1/)
 })
 
+
+test("downgrade is a confirmed in-place rollback, not a forced uninstall", () => {
+  const gate = template.slice(template.indexOf("Function FlowpilotCheckUpgrade"),
+    template.indexOf("FunctionEnd", template.indexOf("Function FlowpilotCheckUpgrade")))
+  assert.match(gate, /MB_YESNO\|MB_ICONEXCLAMATION\|MB_DEFBUTTON2/)
+  assert.match(gate, /Rollback Flowpilot from version/)
+  assert.match(gate, /\$FlowpilotRollbackConfirmed 1/)
+  assert.match(gate, /Rollback from \$R7 to \$\{VERSION\} requires interactive approval/)
+  assert.doesNotMatch(gate, /Downgrading is blocked/)
+  const preinstall = hooks.slice(hooks.indexOf("!macro NSIS_HOOK_PREINSTALL"),
+    hooks.indexOf("!macroend", hooks.indexOf("!macro NSIS_HOOK_PREINSTALL")))
+  assert.match(preinstall, /accounts\.rollback-backup\.json/)
+  assert.match(preinstall, /CopyFiles \/SILENT \/FILESONLY/)
+  assert.match(preinstall, /IfErrors/)
+  assert.doesNotMatch(preinstall, /RmDir|Delete\s+"?\$LOCALAPPDATA/)
+})
+
 test("first install and in-place upgrades keep Tauri normal install operations", () => {
   assert.match(template, /Function RestorePreviousInstallLocation/)
   assert.match(template, /!insertmacro CheckIfAppIsRunning/)
