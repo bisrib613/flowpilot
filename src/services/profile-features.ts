@@ -1,12 +1,12 @@
 export type ProfileSort = "newest" | "recent" | "oldest" | "name_asc" | "name_desc" | "manual"
 
 export const PROFILE_SORT_OPTIONS: { value: ProfileSort; label: string }[] = [
+  { value: "manual", label: "Manual (Drag & Drop)" },
   { value: "newest", label: "Last Added" },
   { value: "recent", label: "Last Opened" },
   { value: "oldest", label: "First Added" },
   { value: "name_asc", label: "Name A–Z" },
   { value: "name_desc", label: "Name Z–A" },
-  { value: "manual", label: "Manual order" },
 ]
 
 export type SortableAccount = {
@@ -53,8 +53,8 @@ export function availableSharedSources<T extends ShareSource>(
 export function readProfileSort(service: string): ProfileSort {
   try {
     const stored = localStorage.getItem(`flowpilot-sort-${service}`)
-    return PROFILE_SORT_OPTIONS.find(item => item.value === stored)?.value || "newest"
+    return PROFILE_SORT_OPTIONS.find(item => item.value === stored)?.value || "manual"
   } catch {
-    return "newest"
+    return "manual"
   }
 }
