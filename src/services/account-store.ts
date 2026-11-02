@@ -8,6 +8,8 @@ export type StoredAccount = {
   avatar: string
   favorite: boolean
   order: number
+  addedAt?: number
+  lastOpenedAt?: number
   service?: "flow" | "dola" | "leonardo" | "chatgpt" | "migoo" | "claude"
   flowSessionId?: string
 }
@@ -25,7 +27,9 @@ function isAccount(value: unknown): value is StoredAccount {
     (account.avatarUrl === null || typeof account.avatarUrl === "string") &&
     typeof account.avatar === "string" &&
     typeof account.favorite === "boolean" &&
-    typeof account.order === "number" &&
+    Number.isFinite(account.order) &&
+    (account.addedAt === undefined || (Number.isFinite(account.addedAt) && account.addedAt >= 0)) &&
+    (account.lastOpenedAt === undefined || (Number.isFinite(account.lastOpenedAt) && account.lastOpenedAt >= 0)) &&
     (account.service === undefined || SERVICES.has(account.service)) &&
     (account.flowSessionId === undefined || (
       typeof account.flowSessionId === "string" &&
