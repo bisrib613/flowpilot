@@ -241,6 +241,91 @@ async fn check_flow_profile(app: tauri::AppHandle, account_id: String) -> Result
     }
 }
 
+// A single command owns one destination's OAuth attempt. The frontend awaits it
+// before starting the next account, so shared Flow sessions are never raced.
+#[tauri::command]
+async fn run_bulk_shared_login(
+    app: tauri::AppHandle, account_id: String, service: String,
+) -> Result<&'static str, String> {
+    let source_accounts = account_store::load_accounts(app.clone())?
+        .ok_or("Account storage unavailable")?;
+    let linked = source_accounts.as_array()
+        .and_then(|rows| rows.iter().find(|row|
+            row.get("id").and_then(|v| v.as_str()) == Some(account_id.as_str()) &&
+            row.get("service").and_then(|v| v.as_str()) == Some(service.as_str())
+        )).ok_or("Destination account not found")?;
+    let flow_id = linked.get("flowSessionId").and_then(|v| v.as_str())
+        .ok_or("Destination is not linked to a Flow profile")?;
+    let expected_email = source_accounts.as_array().and_then(|rows| rows.iter().find(|row|
+        row.get("id").and_then(|v| v.as_str()) == Some(flow_id) &&
+        row.get("service").and_then(|v| v.as_str()).unwrap_or("flow") == "flow"
+    )).and_then(|row| row.get("email")).and_then(|v| v.as_str())
+        .unwrap_or("").to_string();
+
+    let start_app = app.clone();
+    let start_id = account_id.clone();
+    let start_service = service.clone();
+    let created = run_on_ui_thread(&app, move || {
+        webview_manager::begin_bulk_shared_login(&start_app, start_id, start_service)
+    }).await?;
+
+    let result = async {
+        let mut service_google_clicked = false;
+        let mut saw_entry = false;
+        for _ in 0..35 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let poll_app = app.clone();
+            let poll_id = account_id.clone();
+            let poll_service = service.clone();
+            let email = expected_email.clone();
+            let responses = run_on_ui_thread(&app, move || {
+                webview_manager::evaluate_bulk_shared_login(
+                    &poll_app, poll_id, poll_service, email, !service_google_clicked,
+                )
+            }).await?;
+            let mut signals = Vec::new();
+            for receiver in responses {
+                let raw = tauri::async_runtime::spawn_blocking(move ||
+                    receiver.recv_timeout(Duration::from_secs(3)).ok()
+                ).await.map_err(|error| error.to_string())?;
+                if let Some(raw) = raw {
+                    // eval_with_callback serializes the returned JavaScript value.
+                    if let Ok(signal) = serde_json::from_str::<String>(&raw) {
+                        signals.push(signal);
+                    }
+                }
+            }
+            // Prefer success over a stale popup. Otherwise fail closed on
+            // Google session loss or an unrecognized chooser.
+            if signals.iter().any(|s| s == "signed_in") { return Ok("signed_in"); }
+            if signals.iter().any(|s| s == "invalid_session") { return Ok("invalid_session"); }
+            if signals.iter().any(|s| s == "needs_attention") { return Ok("needs_attention"); }
+            if signals.iter().any(|s| s == "google_clicked") {
+                service_google_clicked = true;
+            }
+            if signals.iter().any(|s| s == "entry_clicked" || s == "chooser_clicked") {
+                saw_entry = true;
+            }
+        }
+        Ok(if service_google_clicked || saw_entry { "login_unconfirmed" }
+            else { "login_button_not_found" })
+    }.await;
+
+    let finish_app = app.clone();
+    let finish_id = account_id;
+    let finish_service = service;
+    let cleanup = run_on_ui_thread(&app, move || {
+        webview_manager::finish_bulk_shared_login(
+            &finish_app, finish_id, finish_service, created,
+        )
+    }).await;
+    match (result, cleanup) {
+        (Ok(status), Ok(())) => Ok(status),
+        (Err(error), _) => Err(error),
+        (_, Err(error)) => Err(error),
+    }
+}
+
 #[cfg(test)]
 mod flow_location_tests {
     use super::{flow_location, FlowLocation};
@@ -292,6 +377,7 @@ pub fn run() {
             #[cfg(all(windows, feature = "diag"))]
             webview_download_bridge::diagnostic_save_file,
             check_flow_profile,
+            run_bulk_shared_login,
             google_relogin::google_relogin_status,
             google_relogin::google_relogin_save_password,
             google_relogin::google_relogin_disable,
