@@ -45,6 +45,12 @@ jobs:
           $config | ConvertTo-Json -Depth 30 | Set-Content $configPath -Encoding utf8NoBOM
       - name: Frontend and command/workspace tests
         run: npm run build
+      - name: Live Behind the Name API check
+        if: github.event_name == 'push' && contains(github.event.head_commit.message, '[test-name-api]')
+        continue-on-error: true
+        env:
+          BEHIND_THE_NAME_API_KEY: ${{ secrets.BEHIND_THE_NAME_API_KEY }}
+        run: node scripts/name-api-smoke.cjs
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Build Windows NSIS installer
