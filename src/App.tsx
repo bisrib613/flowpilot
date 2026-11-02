@@ -7,6 +7,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
 import { neighborIndices, shortcutBounds, readPreloadSides } from "./services/workspace-policy"
 import { loadAccounts, saveAccounts } from "./services/account-store"
+import { availableSharedSources, PROFILE_SORT_OPTIONS, readProfileSort, sortProfileCards, type ProfileSort } from "./services/profile-features"
 
 type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt" | "migoo" | "claude"
 type AppView = "accounts" | "favorites" | "settings" | "flow"
@@ -24,6 +25,8 @@ type Account = {
   avatar: string
   favorite: boolean
   order: number
+  addedAt?: number
+  lastOpenedAt?: number
   service?: ServiceId
   flowSessionId?: string
 }
@@ -108,6 +111,13 @@ export default function App() {
   const [preloadSides, setPreloadSides] = useState(readPreloadSides)
   const [settingsTab, setSettingsTab] = useState("general")
   const [activeService, setActiveService] = useState<ServiceId>("flow")
+  const [sortByService, setSortByService] = useState<Record<ServiceId, ProfileSort>>(() =>
+    (Object.keys(SERVICES) as ServiceId[]).reduce((record, service) => {
+      record[service] = readProfileSort(service)
+      return record
+    }, {} as Record<ServiceId, ProfileSort>)
+  )
+  const profileSort = sortByService[activeService]
   const [accountsLoaded, setAccountsLoaded] = useState(false)
   const [accountStorageReady, setAccountStorageReady] = useState(false)
   const [accountStorageError, setAccountStorageError] = useState("")
@@ -137,6 +147,8 @@ export default function App() {
   const [clearingCacheId, setClearingCacheId] = useState<string | null>(null)
   const [clearingAllCaches, setClearingAllCaches] = useState(false)
   const [addAccountOpen, setAddAccountOpen] = useState(false)
+  const [bulkShareOpen, setBulkShareOpen] = useState(false)
+  const [bulkShareSelected, setBulkShareSelected] = useState<string[]>([])
   const [newAccountName, setNewAccountName] = useState("")
   const [googleAccountEmail, setGoogleAccountEmail] = useState("")
   const [flowSessionId, setFlowSessionId] = useState("")
@@ -269,6 +281,51 @@ export default function App() {
     )
     setMenu(null)
   }
+  const changeProfileSort = (sort: ProfileSort) => {
+    setSortByService((current) => ({ ...current, [activeService]: sort }))
+    try { localStorage.setItem(`flowpilot-sort-${activeService}`, sort) } catch { /* optional preference */ }
+    setDragOrderIds(null)
+  }
+  const openBulkShare = () => {
+    setBulkShareSelected([])
+    setBulkShareOpen(true)
+    setMenu(null)
+  }
+  const createBulkSharedProfiles = () => {
+    if (!accountStorageReady || activeService === "flow" || !bulkShareSelected.length) return
+    const eligible = new Set(shareableSources.map((source) => source.id))
+    const sources = accounts.filter((account) => serviceOf(account) === "flow" &&
+      eligible.has(account.id) && bulkShareSelected.includes(account.id))
+    const now = Date.now()
+    const service = activeService
+    setAccounts((current) => {
+      const target = current.filter((account) => serviceOf(account) === service)
+      const linked = new Set(target.map((account) => account.flowSessionId).filter(Boolean))
+      const firstOrder = Math.max(-1, ...target.map((account) => account.order)) + 1
+      const additions = sources.filter((source) => !linked.has(source.id))
+        .map((source, index): Account => ({
+          id: crypto.randomUUID(),
+          name: source.name.slice(0, 80),
+          email: null,
+          avatarUrl: SERVICES[service].logo,
+          avatar: "NF",
+          favorite: false,
+          order: firstOrder + index,
+          addedAt: now + index,
+          service,
+          flowSessionId: source.id,
+        }))
+      return additions.length ? [...current, ...additions] : current
+    })
+    setBulkShareOpen(false)
+    setBulkShareSelected([])
+    setCacheNotice(`Created shared profiles for ${sources.length} Flow sessions in ${SERVICES[service].name}. No login data was copied.`)
+  }
+  const markProfileOpened = (account: Account) => {
+    const timestamp = Date.now()
+    setAccounts((current) => current.map((item) =>
+      item.id === account.id ? { ...item, lastOpenedAt: timestamp } : item))
+  }
   const handleAddAccount = () => {
     setRenamingAccount(null)
     setFlowSessionId("")
@@ -318,7 +375,9 @@ export default function App() {
       avatarUrl: SERVICES[activeService].logo,
       avatar: "NF",
       favorite: false,
-      order: accounts.length,
+      order: Math.max(-1, ...accounts.filter((account) => serviceOf(account) === activeService)
+        .map((account) => account.order)) + 1,
+      addedAt: Date.now(),
       service: activeService,
       ...(source && activeService !== "flow" ? { flowSessionId: source.id } : {}),
     }
@@ -369,6 +428,13 @@ export default function App() {
     () => accounts.filter((account) => serviceOf(account) === activeService).sort((a, b) => a.order - b.order),
     [accounts, activeService]
   )
+  const shareableSources = useMemo(
+    () => availableSharedSources(
+      accounts.filter((account) => serviceOf(account) === "flow"),
+      accounts.filter((account) => serviceOf(account) === activeService)
+    ),
+    [accounts, activeService]
+  )
   const favoriteCount = accounts.filter((a) => a.favorite).length
   const visible = useMemo(
     () =>
@@ -380,10 +446,12 @@ export default function App() {
     [accounts, serviceAccounts, query, view]
   )
   const displayed = useMemo(() => {
-    if (!dragOrderIds || view !== "accounts") return visible
-    const byId = new Map(serviceAccounts.map((account) => [account.id, account]))
-    return dragOrderIds.map((id) => byId.get(id)).filter(Boolean) as Account[]
-  }, [serviceAccounts, dragOrderIds, view, visible])
+    if (dragOrderIds && view === "accounts" && profileSort === "manual") {
+      const byId = new Map(visible.map((account) => [account.id, account]))
+      return dragOrderIds.map((id) => byId.get(id)).filter(Boolean) as Account[]
+    }
+    return view === "accounts" ? sortProfileCards(visible, profileSort) : visible
+  }, [dragOrderIds, view, visible, profileSort])
   const finishPointerDrag = (commit: boolean) => {
     const sourceId = dragSourceIdRef.current
     const targetId = dragTargetIdRef.current
@@ -476,7 +544,7 @@ export default function App() {
     }
   }, [accounts, serviceAccounts])
   const beginPointerDrag = (id: string, event: React.PointerEvent<HTMLButtonElement>) => {
-    if (event.button !== 0 || view !== "accounts" || query.trim()) return
+    if (event.button !== 0 || view !== "accounts" || query.trim() || profileSort !== "manual") return
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
     dragSourceRef.current = event.currentTarget
@@ -495,6 +563,7 @@ export default function App() {
       setMenu(null)
       setDialog(null)
       setAddAccountOpen(false)
+      setBulkShareOpen(false)
     }
     window.addEventListener("keydown", dismiss)
     return () => window.removeEventListener("keydown", dismiss)
@@ -508,7 +577,7 @@ export default function App() {
     return () => document.removeEventListener("click", dismiss)
   }, [menu])
   useEffect(() => {
-    if (!dialog && !addAccountOpen) return
+    if (!dialog && !addAccountOpen && !bulkShareOpen) return
     const previousFocus = document.activeElement as HTMLElement | null
     const trapFocus = (event: KeyboardEvent) => {
       if (event.key !== "Tab") return
@@ -528,7 +597,7 @@ export default function App() {
       document.removeEventListener("keydown", trapFocus)
       if (previousFocus?.isConnected) previousFocus.focus()
     }
-  }, [dialog, addAccountOpen])
+  }, [dialog, addAccountOpen, bulkShareOpen])
   if (view === "flow" && active)
     return (
       <div className={`app ${fullView ? "full" : ""}`}>
