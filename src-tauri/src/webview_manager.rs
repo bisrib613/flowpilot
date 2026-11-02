@@ -95,6 +95,18 @@ fn session_key<R: Runtime>(app: &AppHandle<R>, service: &str, account_id: &str) 
 #[cfg(test)]
 mod session_tests {
     use super::session_key_from_accounts;
+    #[test]
+    fn clipboard_and_download_permissions_are_scoped_to_trusted_https_services() {
+        use super::trusted_service_origin;
+        let parse = |url: &str| url.parse::<tauri::Url>().unwrap();
+        for url in ["https://claude.ai/new", "https://chatgpt.com/", "https://flow.google.com/"] {
+            assert!(trusted_service_origin(&parse(url)));
+        }
+        for url in ["https://claude.ai.evil.invalid/", "http://claude.ai/", "https://accounts.google.com/"] {
+            assert!(!trusted_service_origin(&parse(url)));
+        }
+    }
+
     use serde_json::json;
 
     #[test]
@@ -176,10 +188,44 @@ fn flow_browser_args(port: u16) -> String {
     format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={port} --remote-allow-origins=*")
 }
 
+
+// Only the app's known HTTPS services may access the system clipboard or
+// trigger multiple downloads without a new permission prompt. Neither
+// permission should be granted to OAuth pages or arbitrary navigations.
+fn trusted_service_origin(url: &tauri::Url) -> bool {
+    url.scheme() == "https" && matches!(
+        url.host_str(),
+        Some(
+            "flow.google.com" | "claude.ai" | "chatgpt.com" | "app.leonardo.ai" |
+            "leonardo.ai" | "www.dola.com" | "dola.com" | "migoo.ai" |
+            "www.migoo.ai"
+        )
+    )
+}
+
+fn service_permission<R: Runtime>(
+    webview: tauri::Webview<R>,
+    kind: tauri::webview::PermissionKind,
+) -> tauri::webview::PermissionResponse {
+    use tauri::webview::{PermissionKind, PermissionResponse};
+    if matches!(kind, PermissionKind::ClipboardRead | PermissionKind::AutomaticDownloads) {
+        if let Ok(url) = webview.url() {
+            if trusted_service_origin(&url) {
+                if matches!(kind, PermissionKind::AutomaticDownloads) {
+                    eprintln!("[flowpilot-download] multiple-download permission allowed for {}", url.host_str().unwrap_or("unknown"));
+                }
+                return PermissionResponse::Allow;
+            }
+        }
+    }
+    PermissionResponse::Default
+}
+
 fn flow_builder<R: Runtime>(label: String, url: WebviewUrl, profile: PathBuf, browser_args: &str) -> WebviewBuilder<R> {
     WebviewBuilder::new(label, url)
         .data_directory(profile)
         .additional_browser_args(browser_args)
+        .on_permission_request(service_permission)
 }
 
 #[cfg(windows)]
@@ -472,7 +518,9 @@ fn open_view<R: Runtime>(
     let builder = if let Some((_, browser_args)) = &flow_environment {
         flow_builder(requested_label.clone(), url, profile, browser_args)
     } else {
-        WebviewBuilder::new(requested_label.clone(), url).data_directory(profile)
+        WebviewBuilder::new(requested_label.clone(), url)
+            .data_directory(profile)
+            .on_permission_request(service_permission)
     }
         .focused(!background)
         .on_download(crate::native_downloads::handle)
@@ -491,6 +539,7 @@ fn open_view<R: Runtime>(
                     WebviewUrl::External("about:blank".parse().expect("valid blank URL")),
                 )
                 .data_directory(popup_profile.clone())
+                .on_permission_request(service_permission)
                 .window_features(features)
                 .title("Flowpilot — service window")
                 .on_page_load({
@@ -614,6 +663,7 @@ pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: Strin
     )
     .data_directory(profile)
     .additional_browser_args(&browser_args)
+    .on_permission_request(service_permission)
     .title("FlowPilot — AutoPrompt session")
     .inner_size(1280.0, 800.0)
     .visible(true)
