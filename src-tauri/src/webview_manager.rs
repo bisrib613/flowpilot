@@ -13,7 +13,6 @@ use webview2_com::{
     Microsoft::Web::WebView2::Win32::{
         ICoreWebView2Profile2, ICoreWebView2_13,
         COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
-        COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ,
         COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS,
         COREWEBVIEW2_PERMISSION_STATE_ALLOW,
     },
@@ -100,7 +99,7 @@ fn session_key<R: Runtime>(app: &AppHandle<R>, service: &str, account_id: &str) 
 mod session_tests {
     use super::session_key_from_accounts;
     #[test]
-    fn clipboard_and_download_permissions_are_scoped_to_trusted_https_services() {
+    fn automatic_download_permissions_are_scoped_to_trusted_https_services() {
         use super::trusted_service_origin;
         let parse = |url: &str| url.parse::<tauri::Url>().unwrap();
         for url in ["https://claude.ai/new", "https://chatgpt.com/", "https://flow.google.com/"] {
@@ -211,9 +210,10 @@ fn trusted_service_origin(url: &tauri::Url) -> bool {
 fn attach_webview_permissions<R: Runtime>(
     webview: &tauri::Webview<R>,
 ) -> Result<(), String> {
-    // Tauri 2.11 does not expose on_permission_request. Use its installed
-    // WebView2 runtime directly and inspect the REQUESTING origin (not only
-    // the parent page), so embedded untrusted frames gain no privileges.
+    // Tauri 2.11 does not expose on_permission_request. Use WebView2
+    // directly to allow repeated downloads only from the requesting trusted
+    // service origin. Clipboard copy uses user-gesture writeText; never
+    // silently grant clipboard READ access for an unrelated copy action.
     webview.with_webview(move |platform| {
         let result = (|| -> Result<(), String> {
             let native = unsafe { platform.controller().CoreWebView2() }
@@ -225,8 +225,7 @@ fn attach_webview_permissions<R: Runtime>(
                         let Some(args) = args else { return Ok(()); };
                         let mut kind = Default::default();
                         args.PermissionKind(&mut kind)?;
-                        if kind != COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ &&
-                            kind != COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS {
+                        if kind != COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS {
                             return Ok(());
                         }
 
@@ -240,9 +239,7 @@ fn attach_webview_permissions<R: Runtime>(
                         if let Ok(url) = origin.parse::<tauri::Url>() {
                             if trusted_service_origin(&url) {
                                 args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
-                                if kind == COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS {
-                                    eprintln!("[flowpilot-download] repeated downloads permitted for {}", url.host_str().unwrap_or("unknown"));
-                                }
+                                eprintln!("[flowpilot-download] repeated downloads permitted for {}", url.host_str().unwrap_or("unknown"));
                             }
                         }
                         Ok(())
