@@ -681,7 +681,7 @@ pub fn evaluate_bulk_shared_login<R: Runtime>(
         let js = if google {
             include_str!("bulk_shared_google_chooser.js")
                 .replace("__FLOWPILOT_EXPECTED_EMAIL__", &serde_json::to_string(&expected_email).map_err(|e| e.to_string())?)
-                .replace("__FLOWPILOT_CAN_CLICK__", if click_enabled { "true" } else { "false" })
+                .replace("__FLOWPILOT_CAN_CLICK__", "true")
         } else {
             include_str!("bulk_shared_service_login.js")
                 .replace("__FLOWPILOT_SERVICE__", &serde_json::to_string(&service).map_err(|e| e.to_string())?)
