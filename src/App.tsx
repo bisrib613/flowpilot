@@ -606,7 +606,7 @@ export default function App() {
   if (view === "flow" && active)
     return (
       <div className={`app ${fullView ? "full" : ""}`}>
-        {!fullView && <Sidebar view="flow" setView={setView} profile={profile} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />}
+        {!fullView && <Sidebar view="flow" setView={setView} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />}
         <main className="content flow-content">
           <FlowShell
             downloadNotice={downloadNotice}
@@ -671,7 +671,7 @@ export default function App() {
     )
   return (
     <div className="app">
-      <Sidebar view={view} setView={setView} profile={profile} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />
+      <Sidebar view={view} setView={setView} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />
       <main className={`content ${view === "accounts" || view === "favorites" ? "accounts-page" : ""}`}>
         <DownloadNotice message={downloadNotice} onDismiss={() => setDownloadNotice("")} />
         <header>
@@ -970,7 +970,6 @@ function Brand() {
 function Sidebar({
   view,
   setView,
-  profile,
   accounts, activeService, onService,
 }: {
   accounts: Account[]
@@ -978,7 +977,6 @@ function Sidebar({
   onService: (service: ServiceId) => void
   view: AppView
   setView: (view: AppView) => void
-  profile: { name: string; avatar: string | null }
 }) {
   return (
     <aside>
