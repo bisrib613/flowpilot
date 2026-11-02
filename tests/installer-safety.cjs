@@ -26,7 +26,7 @@ test("running setup never executes a previous installation's uninstaller", () =>
   assert.ok(begin >= 0)
   assert.doesNotMatch(gate, /ExecWait|Goto reinst_uninstall|Uninstall before installing/)
   assert.match(gate, /Unable to compare Flowpilot versions safely/)
-  assert.match(gate, /Downgrading is blocked/)
+  assert.match(gate, /Rollback Flowpilot from version/)
   assert.match(gate, /An older MSI installation/)
 })
 
