@@ -1,3 +1,19 @@
+!macro NSIS_HOOK_PREINSTALL
+  ; On an explicitly approved rollback, create a recoverable snapshot of
+  ; accounts.json without moving/deleting cookies or Google Flow sessions.
+  ; Refuse to alter the installed app if the metadata backup cannot be made.
+  ${If} $FlowpilotRollbackConfirmed = 1
+    IfFileExists "$LOCALAPPDATA\\com.flowpilot.desktop\\accounts.json" 0 flowpilot_rollback_backup_done
+    IfFileExists "$LOCALAPPDATA\\com.flowpilot.desktop\\accounts.rollback-backup.json" flowpilot_rollback_backup_done 0
+    ClearErrors
+    CopyFiles /SILENT /FILESONLY "$LOCALAPPDATA\\com.flowpilot.desktop\\accounts.json" "$LOCALAPPDATA\\com.flowpilot.desktop\\accounts.rollback-backup.json"
+    IfErrors 0 flowpilot_rollback_backup_done
+    MessageBox MB_OK|MB_ICONSTOP "Flowpilot could not back up the account index before rollback. No app files were changed."
+    Abort
+    flowpilot_rollback_backup_done:
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_POSTINSTALL
   CreateShortcut "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\${MAINBINARYNAME}.exe" 0
   !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\${PRODUCTNAME}.lnk"
