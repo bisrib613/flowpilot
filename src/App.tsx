@@ -149,6 +149,10 @@ export default function App() {
   const [addAccountOpen, setAddAccountOpen] = useState(false)
   const [bulkShareOpen, setBulkShareOpen] = useState(false)
   const [bulkShareSelected, setBulkShareSelected] = useState<string[]>([])
+  const [bulkShareRunning, setBulkShareRunning] = useState(false)
+  const [bulkShareProgress, setBulkShareProgress] = useState("")
+  const [bulkShareResults, setBulkShareResults] = useState<Record<string, string>>({})
+  const bulkShareStop = useRef(false)
   const [newAccountName, setNewAccountName] = useState("")
   const [googleAccountEmail, setGoogleAccountEmail] = useState("")
   const [flowSessionId, setFlowSessionId] = useState("")
@@ -293,38 +297,86 @@ export default function App() {
     saveProfileSort({ ...profileSort, direction: profileSort.direction === "asc" ? "desc" : "asc" })
   const openBulkShare = () => {
     setBulkShareSelected([])
+    setAddAccountError("")
     setBulkShareOpen(true)
     setMenu(null)
   }
-  const createBulkSharedProfiles = () => {
-    if (!accountStorageReady || activeService === "flow" || !bulkShareSelected.length) return
+  const createBulkSharedProfiles = async () => {
+    if (!accountStorageReady || bulkShareRunning || activeService === "flow" || !bulkShareSelected.length) return
     const eligible = new Set(shareableSources.map((source) => source.id))
     const sources = accounts.filter((account) => serviceOf(account) === "flow" &&
       eligible.has(account.id) && bulkShareSelected.includes(account.id))
-    const now = Date.now()
     const service = activeService
-    setAccounts((current) => {
-      const target = current.filter((account) => serviceOf(account) === service)
-      const linked = new Set(target.map((account) => account.flowSessionId).filter(Boolean))
-      const firstOrder = Math.max(-1, ...target.map((account) => account.order)) + 1
-      const additions = sources.filter((source) => !linked.has(source.id))
-        .map((source, index): Account => ({
-          id: crypto.randomUUID(),
-          name: source.name.slice(0, 80),
-          email: null,
-          avatarUrl: SERVICES[service].logo,
-          avatar: "NF",
-          favorite: false,
-          order: firstOrder + index,
-          addedAt: now + index,
-          service,
-          flowSessionId: source.id,
-        }))
-      return additions.length ? [...current, ...additions] : current
-    })
+    const target = accounts.filter((account) => serviceOf(account) === service)
+    const linked = new Set(target.map((account) => account.flowSessionId).filter(Boolean))
+    const startOrder = Math.max(-1, ...target.map((account) => account.order)) + 1
+    const now = Date.now()
+    const additions = sources.filter((source) => !linked.has(source.id))
+      .map((source, index): Account => ({
+        id: crypto.randomUUID(),
+        name: source.name.slice(0, 80),
+        email: null,
+        avatarUrl: SERVICES[service].logo,
+        avatar: "NF",
+        favorite: false,
+        order: startOrder + index,
+        addedAt: now + index,
+        service,
+        flowSessionId: source.id,
+      }))
+    if (!additions.length) {
+      setBulkShareOpen(false)
+      return
+    }
+    // Native batch login resolves the linked Flow directory from saved
+    // account metadata; persist that metadata BEFORE opening a service WebView.
+    const nextAccounts = [...accounts, ...additions]
+    try {
+      await saveAccounts(nextAccounts)
+    } catch (error) {
+      setAddAccountError(`Could not save shared profiles: ${String(error)}`)
+      return
+    }
+    setAccounts(nextAccounts)
     setBulkShareOpen(false)
     setBulkShareSelected([])
-    setCacheNotice(`Created shared profiles for ${sources.length} Flow sessions in ${SERVICES[service].name}. No login data was copied.`)
+    setBulkShareResults({})
+    setBulkShareRunning(true)
+    bulkShareStop.current = false
+    const statusLabels: Record<string, string> = {
+      signed_in: "Signed in",
+      invalid_session: "Invalid Flow session",
+      needs_attention: "Needs attention",
+      login_unconfirmed: "Login not confirmed",
+      login_button_not_found: "Google sign-in button not found",
+    }
+    try {
+      for (const [index, account] of additions.entries()) {
+        if (bulkShareStop.current) {
+          setBulkShareResults((current) => ({ ...current, [account.id]: "Stopped" }))
+          continue
+        }
+        setBulkShareProgress(`${index + 1} / ${additions.length} · ${account.name}`)
+        setBulkShareResults((current) => ({ ...current, [account.id]: "Signing in…" }))
+        try {
+          const status = await invoke<string>("run_bulk_shared_login", {
+            accountId: account.id, service,
+          })
+          setBulkShareResults((current) => ({
+            ...current, [account.id]: statusLabels[status] || "Login not confirmed",
+          }))
+        } catch (error) {
+          const invalid = String(error).includes("invalid_flow_session")
+          setBulkShareResults((current) => ({
+            ...current, [account.id]: invalid ? "Invalid Flow session" : `Login failed: ${String(error)}`,
+          }))
+        }
+      }
+    } finally {
+      setBulkShareProgress("")
+      setBulkShareRunning(false)
+      setCacheNotice(`Created ${additions.length} shared ${SERVICES[service].shortName} profiles. Auto Google sign-in finished; review the results.`)
+    }
   }
   const markProfileOpened = (account: Account) => {
     const timestamp = Date.now()
@@ -746,10 +798,10 @@ export default function App() {
                 </button>
               )}
               {view === "accounts" && activeService !== "flow" && (
-                <button className="secondary" disabled={!accountStorageReady || shareableSources.length === 0}
+                <button className="secondary" disabled={!accountStorageReady || bulkShareRunning || shareableSources.length === 0}
                   onClick={openBulkShare}>+ Bulk share</button>
               )}
-              {view === "accounts" && <button className="primary" disabled={!accountStorageReady || flowScanRunning} onClick={handleAddAccount}>
+              {view === "accounts" && <button className="primary" disabled={!accountStorageReady || flowScanRunning || bulkShareRunning} onClick={handleAddAccount}>
                 + Add account
               </button>}
             </div>
@@ -761,6 +813,21 @@ export default function App() {
             <span>{cacheNotice}</span>
             <button type="button" aria-label="Dismiss cache status" onClick={() => setCacheNotice("")}>×</button>
           </div>
+        )}
+        {view === "accounts" && activeService !== "flow" && (bulkShareRunning || Object.keys(bulkShareResults).length > 0) && (
+          <section className="cache-status bulk-login-report" role="status" aria-label="Bulk shared Google sign-in results">
+            <div>
+              <strong>Bulk Google sign-in {bulkShareRunning ? `· ${bulkShareProgress}` : "· completed"}</strong>
+              <ul>
+                {accounts.filter((a) => serviceOf(a) === activeService && bulkShareResults[a.id]).map((a) => (
+                  <li key={a.id}>{a.name}: {bulkShareResults[a.id]}</li>
+                ))}
+              </ul>
+            </div>
+            {bulkShareRunning && <button type="button" onClick={() => { bulkShareStop.current = true }}>
+              Stop after current profile
+            </button>}
+          </section>
         )}
         {view === "accounts" && activeService === "flow" && Object.keys(flowScanResults).length > 0 && (
           <section className="cache-status" role="status" aria-label="Google Flow profile check results">
@@ -887,12 +954,14 @@ export default function App() {
                     </label>
                   ))}
               </div>
-              <p className="session-note">Sources already linked in this service are excluded. Sharing reuses
-                the original Flow session directory; it does not perform a fresh login.</p>
+              <p className="session-note">Existing links are excluded. After adding, Flowpilot automatically
+                opens each service, selects Google sign-in, and checks the result using its shared Flow session.
+                No fresh Google password login is attempted.</p>
+              {addAccountError && <p className="dialog-error" role="alert">{addAccountError}</p>}
               <div className="dialog-actions">
                 <button className="secondary" onClick={() => setBulkShareOpen(false)}>Cancel</button>
                 <button className="primary" disabled={!bulkShareSelected.length}
-                  onClick={createBulkSharedProfiles}>Add {bulkShareSelected.length} profiles</button>
+                  onClick={() => void createBulkSharedProfiles()}>Add & sign in {bulkShareSelected.length} profiles</button>
               </div>
             </div>
           </div>
