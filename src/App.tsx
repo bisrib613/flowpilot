@@ -331,10 +331,14 @@ export default function App() {
     // Native batch login resolves the linked Flow directory from saved
     // account metadata; persist that metadata BEFORE opening a service WebView.
     const nextAccounts = [...accounts, ...additions]
+    setBulkShareRunning(true)
+    setBulkShareProgress("Saving linked profiles…")
     try {
       await saveAccounts(nextAccounts)
     } catch (error) {
       setAddAccountError(`Could not save shared profiles: ${String(error)}`)
+      setBulkShareRunning(false)
+      setBulkShareProgress("")
       return
     }
     setAccounts(nextAccounts)
@@ -960,8 +964,10 @@ export default function App() {
               {addAccountError && <p className="dialog-error" role="alert">{addAccountError}</p>}
               <div className="dialog-actions">
                 <button className="secondary" onClick={() => setBulkShareOpen(false)}>Cancel</button>
-                <button className="primary" disabled={!bulkShareSelected.length}
-                  onClick={() => void createBulkSharedProfiles()}>Add & sign in {bulkShareSelected.length} profiles</button>
+                <button className="primary" disabled={!bulkShareSelected.length || bulkShareRunning}
+                  onClick={() => void createBulkSharedProfiles()}>
+                  {bulkShareRunning ? "Saving…" : `Add & sign in ${bulkShareSelected.length} profiles`}
+                </button>
               </div>
             </div>
           </div>
