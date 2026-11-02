@@ -51,25 +51,6 @@ export type LinkedAccount = {
   order: number
 }
 
-export function sortProfileCards<T extends SortableAccount>(accounts: readonly T[], sort: ProfileSort): T[] {
-  const list = [...accounts]
-  const fallbackOrder = (a: T, b: T) => a.order - b.order || a.id.localeCompare(b.id)
-  switch (sort) {
-    case "newest": return list.sort((a, b) =>
-      (b.addedAt ?? b.order) - (a.addedAt ?? a.order) || fallbackOrder(a, b))
-    case "oldest": return list.sort((a, b) =>
-      (a.addedAt ?? a.order) - (b.addedAt ?? b.order) || fallbackOrder(a, b))
-    case "recent": return list.sort((a, b) =>
-      (b.lastOpenedAt ?? -1) - (a.lastOpenedAt ?? -1) ||
-      (b.addedAt ?? b.order) - (a.addedAt ?? a.order) || fallbackOrder(a, b))
-    case "name_asc": return list.sort((a, b) =>
-      a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }) || fallbackOrder(a, b))
-    case "name_desc": return list.sort((a, b) =>
-      b.name.localeCompare(a.name, undefined, { sensitivity: "base", numeric: true }) || fallbackOrder(a, b))
-    case "manual": return list.sort(fallbackOrder)
-  }
-}
-
 export function availableSharedSources<T extends ShareSource>(
   flowSources: readonly T[],
   targetAccounts: readonly LinkedAccount[]
