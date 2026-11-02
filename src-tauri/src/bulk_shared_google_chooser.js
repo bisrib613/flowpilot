@@ -16,12 +16,12 @@
   const buttonLabels = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')]
     .filter(isVisible)
     .map(node => (node.getAttribute('aria-label') || node.innerText ||
-      node.textContent || node.value || "").replace(/\\s+/g, " ").trim().toLowerCase());
+      node.textContent || node.value || "").replace(/\s+/g, " ").trim().toLowerCase());
   const hasApprove = buttonLabels.some(v =>
     /^(?:lanjutkan|continue|izinkan|allow)$/.test(v));
   const hasCancel = buttonLabels.some(v =>
     /^(?:batal|cancel)$/.test(v));
-  const consentRoute = /(?:\\/|^)(?:consent|oauthchooseaccount)(?:\\/|$)/i.test(path);
+  const consentRoute = /(?:\/|^)(?:consent|oauthchooseaccount)(?:\/|$)/i.test(path);
   const summary = (document.body && document.body.innerText || "").slice(0, 5000);
   const consentText = /(?:mengizinkan.{0,100}mengakses|will allow.{0,100}access|sign in to|login ke)/i.test(summary);
   if (hasApprove && (hasCancel || consentRoute || consentText)) return "consent_required";
