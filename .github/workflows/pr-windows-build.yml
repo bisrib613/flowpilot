@@ -23,6 +23,9 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - name: Install frontend dependencies
+        env:
+          # Unit tests, TypeScript and Vite do not require the heavy Cypress runtime.
+          CYPRESS_INSTALL_BINARY: '0'
         run: npm ci
       - name: Set PR-only installer version (after v1.5.10 test build)
         shell: pwsh
