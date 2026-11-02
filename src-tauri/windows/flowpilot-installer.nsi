@@ -75,6 +75,7 @@ Var UpdateMode
 Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
+Var FlowpilotRollbackConfirmed
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -223,12 +224,22 @@ Function FlowpilotCheckUpgrade
     Quit
   ${EndIf}
 
+  StrCpy $R7 $R0
   nsis_tauri_utils::SemverCompare "${VERSION}" $R0
   Pop $R0
-  ; A downgrade could change on-disk settings; disallow it completely.
+  ; Testing build numbers can be higher than the stable branch number.
+  ; A rollback must be EXPLICIT, never invoke the old uninstaller, and
+  ; preserve every browser profile and account file in place.
   ${If} $R0 = -1
-    MessageBox MB_OK|MB_ICONSTOP "A newer version of Flowpilot is installed. Downgrading is blocked to protect your account data. Setup made no changes."
+    ${If} ${Silent}
+      DetailPrint "Rollback from $R7 to ${VERSION} requires interactive approval."
+      Quit
+    ${EndIf}
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2 "Rollback Flowpilot from version $R7 to ${VERSION}? The app will be replaced IN PLACE without uninstalling. Your accounts and Google/Claude browser sessions will remain, but an older app may not understand newer settings. Back up important data first. Continue rollback?" IDYES flowpilot_rollback_approved
     Quit
+    flowpilot_rollback_approved:
+    StrCpy $FlowpilotRollbackConfirmed 1
+    Abort
   ${EndIf}
 
   ${If} $R0 = 0
