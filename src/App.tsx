@@ -891,7 +891,7 @@ export default function App() {
                   onRename={() => handleRename(a)}
                   onClearCache={() => void handleClearAccountCache(a)}
                   cacheBusy={clearingCacheId === a.id || clearingAllCaches}
-                  dragEnabled={view === "accounts" && profileSort === "manual" && !query.trim()}
+                  dragEnabled={view === "accounts" && profileSort.key === "manual" && !query.trim()}
                   isDragging={draggingId === a.id}
                   dropPosition={
                     dragTargetId === a.id
