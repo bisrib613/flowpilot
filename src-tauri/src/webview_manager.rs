@@ -9,9 +9,13 @@ use tauri::{AppHandle, Manager, Runtime, WebviewUrl};
 #[cfg(windows)]
 use webview2_com::{
     ClearBrowsingDataCompletedHandler, WindowCloseRequestedEventHandler,
+    PermissionRequestedEventHandler,
     Microsoft::Web::WebView2::Win32::{
         ICoreWebView2Profile2, ICoreWebView2_13,
         COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
+        COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ,
+        COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS,
+        COREWEBVIEW2_PERMISSION_STATE_ALLOW,
     },
 };
 #[cfg(windows)]
@@ -203,29 +207,69 @@ fn trusted_service_origin(url: &tauri::Url) -> bool {
     )
 }
 
-fn service_permission<R: Runtime>(
-    webview: tauri::Webview<R>,
-    kind: tauri::webview::PermissionKind,
-) -> tauri::webview::PermissionResponse {
-    use tauri::webview::{PermissionKind, PermissionResponse};
-    if matches!(kind, PermissionKind::ClipboardRead | PermissionKind::AutomaticDownloads) {
-        if let Ok(url) = webview.url() {
-            if trusted_service_origin(&url) {
-                if matches!(kind, PermissionKind::AutomaticDownloads) {
-                    eprintln!("[flowpilot-download] multiple-download permission allowed for {}", url.host_str().unwrap_or("unknown"));
-                }
-                return PermissionResponse::Allow;
-            }
+#[cfg(windows)]
+fn attach_webview_permissions<R: Runtime>(
+    webview: &tauri::Webview<R>,
+) -> Result<(), String> {
+    // Tauri 2.11 does not expose on_permission_request. Use its installed
+    // WebView2 runtime directly and inspect the REQUESTING origin (not only
+    // the parent page), so embedded untrusted frames gain no privileges.
+    webview.with_webview(move |platform| {
+        let result = (|| -> Result<(), String> {
+            let native = unsafe { platform.controller().CoreWebView2() }
+                .map_err(|error| error.to_string())?;
+            let mut token = Default::default();
+            unsafe {
+                native.add_PermissionRequested(
+                    &PermissionRequestedEventHandler::create(Box::new(move |_, args| {
+                        let Some(args) = args else { return Ok(()); };
+                        let mut kind = Default::default();
+                        args.PermissionKind(&mut kind)?;
+                        if kind != COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ &&
+                            kind != COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS {
+                            return Ok(());
+                        }
+
+                        let mut raw_origin = windows::core::PWSTR::null();
+                        args.Uri(&mut raw_origin)?;
+                        // WebView2 allocates with CoTaskMemAlloc; always release
+                        // the returned pointer and do not log sensitive URLs.
+                        let origin = raw_origin.to_string();
+                        windows::Win32::System::Com::CoTaskMemFree(Some(raw_origin.0.cast()));
+                        let Ok(origin) = origin else { return Ok(()); };
+                        if let Ok(url) = origin.parse::<tauri::Url>() {
+                            if trusted_service_origin(&url) {
+                                args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
+                                if kind == COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS {
+                                    eprintln!("[flowpilot-download] repeated downloads permitted for {}", url.host_str().unwrap_or("unknown"));
+                                }
+                            }
+                        }
+                        Ok(())
+                    })),
+                    &mut token,
+                )
+            }.map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("[flowpilot-webview] permission handler unavailable: {error}");
         }
-    }
-    PermissionResponse::Default
+    }).map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+fn attach_webview_permissions<R: Runtime>(
+    _webview: &tauri::Webview<R>,
+) -> Result<(), String> {
+    Ok(())
 }
 
 fn flow_builder<R: Runtime>(label: String, url: WebviewUrl, profile: PathBuf, browser_args: &str) -> WebviewBuilder<R> {
     WebviewBuilder::new(label, url)
         .data_directory(profile)
         .additional_browser_args(browser_args)
-        .on_permission_request(service_permission)
+        
 }
 
 #[cfg(windows)]
@@ -524,7 +568,7 @@ fn open_view<R: Runtime>(
     } else {
         WebviewBuilder::new(requested_label.clone(), url)
             .data_directory(profile)
-            .on_permission_request(service_permission)
+            
     }
         .focused(!background)
         .on_download(crate::native_downloads::handle)
@@ -543,7 +587,7 @@ fn open_view<R: Runtime>(
                     WebviewUrl::External("about:blank".parse().expect("valid blank URL")),
                 )
                 .data_directory(popup_profile.clone())
-                .on_permission_request(service_permission)
+                
                 .window_features(features)
                 .title("Flowpilot — service window")
                 .on_page_load({
@@ -567,6 +611,9 @@ fn open_view<R: Runtime>(
                     Ok(window) => {
                         // Keep the opener relationship for Google OAuth and
                         // preserve the shared browser profile/cookies.
+                        if let Err(error) = attach_webview_permissions(window.as_ref()) {
+                            eprintln!("[flowpilot-webview] popup permission setup failed: {error}");
+                        }
                         if let Err(error) = attach_popup_window_close_handler(&window) {
                             eprintln!("[flowpilot-webview] popup close setup failed: {error}");
                         }
@@ -584,6 +631,9 @@ fn open_view<R: Runtime>(
             tauri::LogicalSize::new(width, height),
         )
         .map_err(|e| e.to_string())?;
+    if let Some(view) = app.get_webview(&requested_label) {
+        attach_webview_permissions(&view)?;
+    }
     if let Some((port, _)) = flow_environment {
         state.automation_ports.lock().map_err(|_| "webview state unavailable")?.insert(key.clone(), port);
     }
@@ -667,7 +717,7 @@ pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: Strin
     )
     .data_directory(profile)
     .additional_browser_args(&browser_args)
-    .on_permission_request(service_permission)
+    
     .title("FlowPilot — AutoPrompt session")
     .inner_size(1280.0, 800.0)
     .visible(true)
@@ -676,6 +726,9 @@ pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: Strin
     .on_navigation(|url| url.scheme() == "https" || url.scheme() == "blob")
     .build()
     .map_err(|error| error.to_string())?;
+    if let Some(window) = app.get_webview_window(&label) {
+        attach_webview_permissions(window.as_ref())?;
+    }
     state.automation_ports.lock().map_err(|_| "webview state unavailable")?.insert(key.clone(), port);
     touch_account(&state, &key)?;
     Ok(port)
