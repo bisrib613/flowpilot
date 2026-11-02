@@ -188,3 +188,8 @@ aside button.active, aside button:hover { background: #b6f09c; color: #263520; }
 
 .profile-sort-controls{display:flex;align-items:center;gap:6px}
 .profile-sort-direction{width:38px;min-width:38px;padding:0;font-size:18px;line-height:1}
+
+.bulk-login-report{align-items:flex-start;justify-content:space-between;max-width:900px;flex-wrap:wrap}
+.bulk-login-report>div{min-width:0;flex:1}
+.bulk-login-report ul{margin:8px 0 0;padding-left:18px;max-height:200px;overflow-y:auto;line-height:1.8}
+.bulk-login-report button{width:auto;padding:5px 10px;border:1px solid #4a6b54;border-radius:7px;background:#1a2820;color:#b6f09c;font-size:12px;white-space:nowrap}
