@@ -23,6 +23,6 @@ test('workspace management grants stay local', () => {
   assert.equal(capability.remote, undefined)
   for (const file of fs.readdirSync('src-tauri/capabilities').filter(name => name.endsWith('.json'))) {
     const entry = JSON.parse(read(`src-tauri/capabilities/${file}`))
-    if (entry.remote) assert.ok(!entry.permissions.some(name => ['allow-prepare-workspace', 'allow-preload-workspace', 'allow-close-workspaces'].includes(name)))
+    if (entry.remote) assert.ok(!entry.permissions.some(name => ['allow-prepare-workspace', 'allow-preload-workspace', 'allow-close-workspaces', 'allow-name-generator-status', 'allow-name-generator-save-key', 'allow-name-generator-disable'].includes(name)))
   }
 })

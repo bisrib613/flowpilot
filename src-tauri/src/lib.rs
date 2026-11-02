@@ -3,6 +3,7 @@ use tauri::Emitter;
 
 mod account_store;
 mod google_relogin;
+mod name_generator;
 mod webview_manager;
 mod native_downloads;
 mod download_settings;
@@ -276,6 +277,8 @@ async fn run_bulk_shared_login(
         let mut saw_entry = false;
         let mut consent_pending = false;
         let mut saw_consent = false;
+        let mut signup_name_ready = false;
+        let mut signup_name: Option<String> = None;
         // A first-time Google OAuth consent needs a human click. Keep polling
         // rather than closing the dialog while the user reads the permission.
         for attempt in 0..120 {
@@ -287,9 +290,10 @@ async fn run_bulk_shared_login(
             let poll_service = service.clone();
             let email = expected_email.clone();
             let name = profile_name.clone();
+            let generated_name = signup_name.clone();
             let responses = run_on_ui_thread(&app, move || {
                 webview_manager::evaluate_bulk_shared_login(
-                    &poll_app, poll_id, poll_service, email, name, !service_google_clicked,
+                    &poll_app, poll_id, poll_service, email, name, generated_name, signup_name_ready, !service_google_clicked,
                 )
             }).await?;
             let mut signals = Vec::new();
@@ -315,6 +319,11 @@ async fn run_bulk_shared_login(
                     "accountId": account_id,
                     "status": "consent_required"
                 }));
+            }
+            if signals.iter().any(|s| s == "signup_name_required") && !signup_name_ready {
+                signup_name = name_generator::random_indonesian_name().await;
+                signup_name_ready = true;
+                continue;
             }
             if signals.iter().any(|s| s == "invalid_session") { return Ok("invalid_session"); }
             if signals.iter().any(|s| s == "verification_required") { return Ok("verification_required"); }
@@ -404,6 +413,9 @@ pub fn run() {
             webview_download_bridge::diagnostic_save_file,
             check_flow_profile,
             run_bulk_shared_login,
+            name_generator::name_generator_status,
+            name_generator::name_generator_save_key,
+            name_generator::name_generator_disable,
             google_relogin::google_relogin_status,
             google_relogin::google_relogin_save_password,
             google_relogin::google_relogin_disable,

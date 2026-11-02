@@ -7,7 +7,7 @@ const chooserSource = fs.readFileSync("src-tauri/src/bulk_shared_google_chooser.
 
 function fixture({ host = "claude.ai", path = "/", buttons = [],
   signals = [], identities = [], inputs = [], service = "claude",
-  expected = "", click = true, heading = "", summary = "", extra = {}, fallbackName = "Linked profile", search = "" } = {}) {
+  expected = "", click = true, heading = "", summary = "", extra = {}, fallbackName = "Linked profile", search = "", generatedName = null, nameReady = true } = {}) {
   const clicked = []
   const window = {}
   window.self = window
@@ -67,6 +67,8 @@ function fixture({ host = "claude.ai", path = "/", buttons = [],
     const source = which === "service" ? serviceSource
       .replace("__FLOWPILOT_SERVICE__", JSON.stringify(service))
       .replace("__FLOWPILOT_PROFILE_NAME__", JSON.stringify(fallbackName))
+      .replace("__FLOWPILOT_GENERATED_NAME__", JSON.stringify(generatedName))
+      .replace("__FLOWPILOT_SIGNUP_NAME_READY__", JSON.stringify(nameReady))
       .replace("__FLOWPILOT_CAN_CLICK__", JSON.stringify(canClick))
       : chooserSource
       .replace("__FLOWPILOT_EXPECTED_EMAIL__", JSON.stringify(expected))
@@ -248,7 +250,7 @@ test("unexpected or invalid signup fields are preserved for manual attention", (
     const f = fixture({ service: "chatgpt", host: "auth.openai.com", path: "/about-you", inputs,
       buttons: [{ text: "Continue", type: "submit" }],
     })
-    assert.equal(f.execute("service"), "signup_required")
+    assert.equal(f.execute("service"), inputs.length ? "signup_required" : "waiting")
     assert.deepEqual(f.clicked, [])
   }
 })
@@ -311,4 +313,41 @@ test("returning consent enforces the configured profile email", () => {
     assert.equal(f.execute("google"), outcome)
     assert.equal(f.clicked.length, outcome === "consent_clicked" ? 1 : 0)
   }
+})
+
+test("signup asks native code for a generated name before modifying the form", () => {
+  const f = fixture({ service: "chatgpt", host: "auth.openai.com", path: "/about-you", nameReady: false,
+    inputs: [{ name: "name", type: "text", value: "Google Name" }, { name: "age", type: "number" }],
+    buttons: [{ text: "Continue", type: "submit" }],
+  })
+  assert.equal(f.execute("service", false), "signup_name_required")
+  assert.equal(f.inputNodes[0].value, "Google Name")
+  assert.equal(f.inputNodes[1].value, "")
+  assert.deepEqual(f.clicked, [])
+})
+test("configured Indonesian name replaces the Google default only during signup", () => {
+  const f = fixture({ service: "chatgpt", host: "auth.openai.com", path: "/about-you", generatedName: "Budi Santoso",
+    inputs: [{ name: "name", type: "text", value: "Google Name" }, { name: "age", type: "number" }],
+    buttons: [{ text: "Continue", type: "submit" }],
+  })
+  assert.equal(f.execute("service", false), "signup_filled")
+  assert.equal(f.inputNodes[0].value, "Budi Santoso")
+  assert.equal(f.inputNodes[1].value, "27")
+  assert.equal(f.execute("service", false), "signup_clicked")
+  assert.deepEqual(f.clicked, ["Continue"])
+})
+test("registered ChatGPT accounts never request or apply a generated signup name", () => {
+  const f = fixture({ service: "chatgpt", host: "chatgpt.com", nameReady: false, generatedName: "Random Name",
+    signals: ['button[aria-label="Open profile menu"]'],
+    inputs: [{ name: "name", type: "text", value: "Existing Account" }],
+  })
+  assert.equal(f.execute("service", false), "signed_in")
+  assert.equal(f.inputNodes[0].value, "Existing Account")
+  assert.deepEqual(f.clicked, [])
+})
+
+test("an unloaded about-you page waits without consuming a name request", () => {
+  const f = fixture({ service: "chatgpt", host: "auth.openai.com", path: "/about-you", nameReady: false })
+  assert.equal(f.execute("service", false), "waiting")
+  assert.deepEqual(f.clicked, [])
 })

@@ -1,6 +1,6 @@
 // Injected only into the target service's WebView during explicit bulk sharing.
 // No password entry, CAPTCHA bypass, credential access, or arbitrary link clicks.
-(function bulkSharedServiceLogin(service, canClick, fallbackName) {
+(function bulkSharedServiceLogin(service, canClick, fallbackName, generatedName, nameReady) {
   const hostnames = {
     claude: ["claude.ai"],
     chatgpt: ["chatgpt.com", "auth.openai.com"],
@@ -38,17 +38,19 @@
     const names = [...document.querySelectorAll('input[name="name"]')].filter(visible);
     const ages = [...document.querySelectorAll('input[name="age"]')].filter(visible);
     const submit = buttons.filter(node => node.getAttribute("type") === "submit" && title(node) === "Continue");
+    if (names.length === 0 && ages.length === 0) return "waiting";
     if (names.length !== 1 || ages.length !== 1 || submit.length !== 1 ||
         names[0].disabled || ages[0].disabled) return "signup_required";
+    if (!nameReady) return "signup_name_required";
     if (window.__flowpilotSignupClicked) return "waiting";
-    const name = names[0].value.trim() || (fallbackName || "").trim();
+    const name = (generatedName || "").trim() || names[0].value.trim() || (fallbackName || "").trim();
     if (!name) return "signup_required";
     const setValue = (input, value) => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, value);
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
     };
-    if (!names[0].value.trim()) setValue(names[0], name);
+    if (!names[0].value.trim() || generatedName && !window.__flowpilotSignupPrepared) setValue(names[0], name);
     if (!ages[0].value) setValue(ages[0], "27");
     if (!names[0].checkValidity() || !ages[0].checkValidity()) return "signup_required";
     if (!window.__flowpilotSignupPrepared) {
@@ -117,4 +119,4 @@
   }
   if (google.length > 1 || entry.length > 1) return "needs_attention";
   return "waiting";
-})(__FLOWPILOT_SERVICE__, __FLOWPILOT_CAN_CLICK__, __FLOWPILOT_PROFILE_NAME__);
+})(__FLOWPILOT_SERVICE__, __FLOWPILOT_CAN_CLICK__, __FLOWPILOT_PROFILE_NAME__, __FLOWPILOT_GENERATED_NAME__, __FLOWPILOT_SIGNUP_NAME_READY__);

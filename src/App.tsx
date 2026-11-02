@@ -873,6 +873,7 @@ export default function App() {
           {settingsTab === "general" ? <>
           <DownloadSettings />
           <GoogleReLoginSettings onEnabled={() => void checkAllFlowProfiles()} />
+          <NameGeneratorSettings />
           <section className="preload-setting">
             <div><h2>Account preload</h2><p>Keep up to this many accounts ready on each side of the current profile, per service. More accounts use more memory.</p></div>
             <label htmlFor="preload-sides">Accounts per side</label>
@@ -1563,6 +1564,67 @@ function GoogleReLoginSettings({ onEnabled }: { onEnabled: () => void }) {
         {enabled && <button className="secondary" disabled={busy} onClick={() => void disable()}>
           Disable re-login
         </button>}
+      </div>
+      {message && <p role="status">{message}</p>}
+    </section>
+  )
+}
+function NameGeneratorSettings() {
+  const [enabled, setEnabled] = useState(false)
+  const [apiKey, setApiKey] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState("")
+  useEffect(() => {
+    let active = true
+    void invoke<boolean>("name_generator_status").then((value) => {
+      if (active) setEnabled(value)
+    }).catch(() => {
+      if (active) setMessage("Could not read the saved API key setting.")
+    })
+    return () => { active = false }
+  }, [])
+  const save = async () => {
+    setBusy(true)
+    setMessage("")
+    try {
+      await invoke("name_generator_save_key", { apiKey })
+      setEnabled(true)
+      setApiKey("")
+      setMessage("API key saved. Indonesian names will be requested only during new ChatGPT signup.")
+    } catch {
+      setMessage("Could not save API key. Check Windows Credential Manager and try again.")
+    } finally { setBusy(false) }
+  }
+  const disable = async () => {
+    setBusy(true)
+    setMessage("")
+    try {
+      await invoke("name_generator_disable")
+      setEnabled(false)
+      setApiKey("")
+      setMessage("Name generator disabled and its saved API key removed.")
+    } catch {
+      setMessage("Could not remove the saved API key.")
+    } finally { setBusy(false) }
+  }
+  return (
+    <section className="preload-setting">
+      <div>
+        <h2>Indonesian signup names</h2>
+        <p>Use Behind the Name to generate a name for new ChatGPT accounts during shared-profile sign-in. Existing accounts keep their names. If the API is unavailable, use the Google name or linked profile name. The signup age defaults to 27 when empty.</p>
+        <p>Your API key is stored in Windows Credential Manager and sent only to Behind the Name to request names.</p>
+        <p>Status: <strong>{enabled ? "Enabled" : "Disabled"}</strong></p>
+      </div>
+      <label htmlFor="behind-the-name-key">Behind the Name API key</label>
+      <input id="behind-the-name-key" type="password" autoComplete="new-password"
+        value={apiKey} disabled={busy} maxLength={512}
+        onChange={(event) => setApiKey(event.target.value)}
+        placeholder={enabled ? "Enter a new key to replace the saved one" : "Enter API key"} />
+      <div className="dialog-actions">
+        <button className="primary" disabled={busy || !apiKey.trim()} onClick={() => void save()}>
+          {enabled ? "Replace API key" : "Save and enable"}
+        </button>
+        {enabled && <button className="secondary" disabled={busy} onClick={() => void disable()}>Disable</button>}
       </div>
       {message && <p role="status">{message}</p>}
     </section>
