@@ -8,6 +8,23 @@
       (/\/challenge(?:\/|$)/.test(path) && !/\/challenge\/pwd(?:\/|$)/.test(path)))
     return "needs_attention";
   const isVisible = el => el instanceof HTMLElement && el.getClientRects().length > 0;
+  // Google may show a separate OAuth consent screen after the account
+  // chooser (e.g. "Login ke Claude" with "Batal" / "Lanjutkan"). This
+  // grants a third party access to profile information and MUST NOT be
+  // clicked by automation. Signal the desktop app while leaving the
+  // popup available for the user to approve or cancel.
+  const buttonLabels = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')]
+    .filter(isVisible)
+    .map(node => (node.getAttribute('aria-label') || node.innerText ||
+      node.textContent || node.value || "").replace(/\\s+/g, " ").trim().toLowerCase());
+  const hasApprove = buttonLabels.some(v =>
+    /^(?:lanjutkan|continue|izinkan|allow)$/.test(v));
+  const hasCancel = buttonLabels.some(v =>
+    /^(?:batal|cancel)$/.test(v));
+  const consentRoute = /(?:\\/|^)(?:consent|oauthchooseaccount)(?:\\/|$)/i.test(path);
+  const summary = (document.body && document.body.innerText || "").slice(0, 5000);
+  const consentText = /(?:mengizinkan.{0,100}mengakses|will allow.{0,100}access|sign in to|login ke)/i.test(summary);
+  if (hasApprove && (hasCancel || consentRoute || consentText)) return "consent_required";
   const password = [...document.querySelectorAll('input[type="password"]')].some(isVisible);
   if (password) return "invalid_session";
   const candidates = [...document.querySelectorAll('[data-identifier], [data-email]')]
