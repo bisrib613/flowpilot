@@ -712,7 +712,7 @@ pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: Strin
     let browser_args = flow_browser_args(port);
     tauri::WebviewWindowBuilder::new(
         app,
-        label,
+        label.clone(),
         WebviewUrl::External(service_url("flow")?.parse().map_err(|_| "invalid Flow URL")?),
     )
     .data_directory(profile)
