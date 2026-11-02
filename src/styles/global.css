@@ -168,3 +168,20 @@ aside button.active, aside button:hover { background: #b6f09c; color: #263520; }
 .dialog-error { color:#ff8f8f !important; margin:8px 0 0 !important; font-size:12px; }
 
 /* Pointer-based account dragging: the source stays in the grid as a placeholder while the preview follows the pointer. */
+
+
+/* Profile list sorting is a presentation preference; the saved manual order is unchanged. */
+.header-actions{flex-wrap:wrap;justify-content:flex-end}
+.profile-sort-wrap{display:flex;align-items:center;gap:7px;font-size:12px;color:#9b9c9e}
+.profile-sort{height:42px;max-width:170px;padding:0 12px;border:1px solid #363a3d;border-radius:10px;background:#131619;color:#e8e9e9;font:inherit}
+.profile-sort:focus{outline:2px solid #82dbf7;outline-offset:2px}
+.bulk-share-dialog{width:min(560px,calc(100% - 32px))}
+.bulk-share-dialog p{color:#9b9c9e;font-size:12px;line-height:1.6}
+.bulk-share-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:18px 0 12px}
+.bulk-share-actions span{font-size:12px;margin-left:auto}
+.bulk-share-source-list{max-height:min(44vh,340px);overflow-y:auto;border:1px solid #363a3d;border-radius:10px;padding:4px}
+.bulk-share-source{display:flex;align-items:center;gap:12px;padding:11px 12px;color:#e8e9e9;font-size:13px;border-radius:8px;cursor:pointer}
+.bulk-share-source:hover{background:#23272a}
+.bulk-share-source input{accent-color:#b6f09c;width:16px;height:16px;flex:none}
+.bulk-share-source span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:900px){.header-actions{justify-content:flex-start}.profile-sort-wrap{flex:0 0 auto}}
