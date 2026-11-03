@@ -771,6 +771,11 @@ export default function App() {
               setFullView(false)
               setView("accounts")
             }}
+            onAddAccount={() => {
+              setFullView(false)
+              setView("accounts")
+              handleAddAccount()
+            }}
           />
         </main>
       </div>
@@ -1713,6 +1718,7 @@ function FlowShell({
   onSaveBookmark,
   onDeleteBookmark,
   onBack,
+  onAddAccount,
 }: {
   downloadNotice: string
   onDismissDownload: () => void
@@ -1729,6 +1735,7 @@ function FlowShell({
   onSaveBookmark: (id: string | null, name: string, url: string) => string | null
   onDeleteBookmark: (id: string) => void
   onBack: () => void
+  onAddAccount: () => void
 }) {
   const serviceId = serviceOf(account)
   const service = SERVICES[serviceId]
@@ -1979,6 +1986,7 @@ function FlowShell({
     <div className={`flow-shell ${bookmarkService ? "has-bookmarks" : ""}`}>
       <div className="flow-bar">
         <button className="back" disabled={closing} onClick={onBack}>‹ Accounts</button>
+        <button className="back" disabled={closing} onClick={onAddAccount}>+ Add account</button>
         <span className="flow-status" role="status">{status}</span>
         <div className="flow-controls">
           <strong className="active-profile-name" title={account.name}>{account.name}</strong>
