@@ -937,11 +937,12 @@ export default function App() {
             <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title">
               <h2 id="delete-title">Delete {dialog.name}?</h2>
               <p>
-                This deletes this local profile, including its cookies and saved login. It does not delete your account with the service.
+                This removes this profile from Flowpilot. Browser data is deleted only when this profile owns the session folder and no other profile uses it. It does not delete your account with the service.
               </p>
               {accounts.some((a) => a.id !== dialog.id && (a.flowSessionId || (serviceOf(a) === "flow" ? a.id : null)) === (dialog.flowSessionId || (serviceOf(dialog) === "flow" ? dialog.id : ""))) && (
-                <p className="dialog-error">This session is also used by {accounts.filter((a) => a.id !== dialog.id && (a.flowSessionId || (serviceOf(a) === "flow" ? a.id : null)) === (dialog.flowSessionId || (serviceOf(dialog) === "flow" ? dialog.id : ""))).map((a) => `${SERVICES[serviceOf(a)].shortName}: ${a.name}`).join(", ")}. Deleting it clears their local logins too.</p>
+                <p className="session-note">This session is also used by {accounts.filter((a) => a.id !== dialog.id && (a.flowSessionId || (serviceOf(a) === "flow" ? a.id : null)) === (dialog.flowSessionId || (serviceOf(dialog) === "flow" ? dialog.id : ""))).map((a) => `${SERVICES[serviceOf(a)].shortName}: ${a.name}`).join(", ")}. Their browser data and saved logins will be kept.</p>
               )}
+              {dialog.flowSessionId && <p className="session-note">The borrowed Flow session will be kept, including this platform's login stored in that shared session.</p>}
               <div className="dialog-actions">
                 <button autoFocus className="secondary" onClick={() => setDialog(null)}>
                   Cancel
@@ -1013,7 +1014,7 @@ export default function App() {
                     <option value="">Normal login · Separate profile</option>
                     {accounts.filter((a) => serviceOf(a) === "flow").map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
-                  {flowSessionId && <p className="session-note">Open the account, then choose Continue with Google. This shares the selected Flow profile's sessions; deleting either profile clears the shared local logins.</p>}
+                  {flowSessionId && <p className="session-note">Open the account, then choose Continue with Google. This uses the selected Flow profile's browser session. Removing a linked profile keeps the source session and saved logins.</p>}
                 </>
               )}
               <label className="field-label" htmlFor="account-name">Profile name</label>

@@ -95,9 +95,28 @@ fn session_key<R: Runtime>(app: &AppHandle<R>, service: &str, account_id: &str) 
     session_key_from_accounts(&accounts, service, account_id)
 }
 
+// Linked cards borrow their source directory; they never own its deletion.
+// An owner also keeps its directory while another card still references it.
+fn may_delete_session_directory(accounts: &serde_json::Value, service: &str, account_id: &str) -> Result<bool, String> {
+    let own_key = profile_key(service, account_id)?;
+    let storage_key = session_key_from_accounts(accounts, service, account_id)?;
+    if own_key != storage_key { return Ok(false); }
+    if let Some(rows) = accounts.as_array() {
+        for row in rows {
+            let Some(id) = row.get("id").and_then(|v| v.as_str()) else { continue };
+            let row_service = row.get("service").and_then(|v| v.as_str()).unwrap_or("flow");
+            if id == account_id && row_service == service { continue; }
+            if session_key_from_accounts(accounts, row_service, id)? == storage_key {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod session_tests {
-    use super::session_key_from_accounts;
+    use super::{session_key_from_accounts, may_delete_session_directory};
     #[test]
     fn automatic_download_permissions_are_scoped_to_trusted_https_services() {
         use super::trusted_service_origin;
@@ -111,6 +130,24 @@ mod session_tests {
     }
 
     use serde_json::json;
+
+    #[test]
+    fn deletion_preserves_borrowed_and_referenced_session_directories() {
+        let accounts = json!([
+            {"id":"a","service":"flow"},
+            {"id":"b","service":"claude","flowSessionId":"a"},
+            {"id":"c","service":"chatgpt","flowSessionId":"a"},
+            {"id":"d","service":"claude"}
+        ]);
+        assert!(!may_delete_session_directory(&accounts, "claude", "b").unwrap());
+        assert!(!may_delete_session_directory(&accounts, "flow", "a").unwrap());
+        assert!(may_delete_session_directory(&accounts, "claude", "d").unwrap());
+        // Deleting the final borrowed card must not wipe an orphaned source.
+        let orphan = json!([accounts[1].clone()]);
+        assert!(!may_delete_session_directory(&orphan, "claude", "b").unwrap());
+        let owner_only = json!([accounts[0].clone()]);
+        assert!(may_delete_session_directory(&owner_only, "flow", "a").unwrap());
+    }
 
     #[test]
     fn legacy_and_normal_profiles_keep_their_existing_directories() {
@@ -1083,17 +1120,8 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
     let key = profile_key(&service, &account_id)?;
     let accounts = crate::account_store::load_accounts(app.clone())?.unwrap_or(serde_json::Value::Null);
     let storage_key = session_key_from_accounts(&accounts, &service, &account_id)?;
-    let mut affected = vec![key.clone()];
-    if let Some(rows) = accounts.as_array() {
-        for row in rows {
-            let Some(id) = row.get("id").and_then(|v| v.as_str()) else { continue };
-            let service = row.get("service").and_then(|v| v.as_str()).unwrap_or("flow");
-            if session_key_from_accounts(&accounts, service, id)? == storage_key {
-                let linked_key = profile_key(service, id)?;
-                if !affected.contains(&linked_key) { affected.push(linked_key); }
-            }
-        }
-    }
+    let delete_directory = may_delete_session_directory(&accounts, &service, &account_id)?;
+    let affected = vec![key.clone()];
     let state = app.state::<WebviewManager>();
     cancel_preloads(&state)?;
     let _operation = state
@@ -1140,6 +1168,7 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
         }
     }
 
+    if !delete_directory { return Ok(true); }
     let profile = profile_path(app, &storage_key)?;
     if !profile.exists() {
         return Ok(true);
