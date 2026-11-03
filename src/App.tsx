@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react"
 import { getVersion } from "@tauri-apps/api/app"
 import { listen } from "@tauri-apps/api/event"
 import { invoke } from "@tauri-apps/api/core"
@@ -532,6 +532,10 @@ export default function App() {
     () => accounts.filter((account) => serviceOf(account) === activeService).sort((a, b) => a.order - b.order),
     [accounts, activeService]
   )
+  const workspaceAccounts = useMemo(
+    () => sortProfileCards(serviceAccounts, profileSort),
+    [serviceAccounts, profileSort]
+  )
   const shareableSources = useMemo(
     () => availableSharedSources(
       accounts.filter((account) => serviceOf(account) === "flow"),
@@ -720,7 +724,7 @@ export default function App() {
               setFullView(false)
               setView("accounts")
             }}
-            accounts={serviceAccounts}
+            accounts={workspaceAccounts}
             bookmarks={
               supportsBookmarks(serviceOf(active))
                 ? bookmarksByService[serviceOf(active) as BookmarkServiceId]
@@ -783,44 +787,36 @@ export default function App() {
   return (
     <div className="app">
       <Sidebar view={view} setView={setView} accounts={accounts} activeService={activeService} onService={selectService} />
-      <main className={`content ${view === "accounts" || view === "favorites" ? "accounts-page" : ""}`}>
+      <main className={`content ${view === "accounts" || view === "favorites" ? "accounts-page" : "settings-page"}`}>
         <DownloadNotice message={downloadNotice} onDismiss={() => setDownloadNotice("")} />
         <header>
-          <div>
-            <div className="eyebrow page-eyebrow" aria-hidden="true">
-              FLOWPILOT /{" "}
-              {view === "settings"
-                ? "SETTINGS"
-                : view === "favorites"
-                ? "FAVORITES"
-                : view.toUpperCase()}
-            </div>
-            <h1>
-              {view === "settings"
-                ? "Settings"
-                : view === "favorites"
-                ? "Favorite Accounts"
-                : SERVICES[activeService].name}
-            </h1>
-            <p>
-              {view === "settings"
-                ? "Keep Flowpilot personal, private, and ready to use."
-                : view === "favorites"
-                ? "Your favorite accounts across all services."
-                : `Manage your ${SERVICES[activeService].name} accounts in one place.`}
-            </p>
-            {view === "accounts" && (
-              <div className="account-count">
-                {serviceAccounts.length}{" "}
-                {serviceAccounts.length === 1 ? "profile" : "profiles"} in {SERVICES[activeService].name}
-              </div>
-            )}
-            {view === "favorites" && (
-              <div className="account-count">{favoriteCount} Favorites</div>
-            )}
-          </div>
+          <h1>{view === "settings" ? "Settings" : view === "favorites" ? "Favorite Accounts" : SERVICES[activeService].name}</h1>
           {(view === "accounts" || view === "favorites") && (
             <div className="header-actions">
+              {view === "accounts" && activeService === "flow" && (
+                <button className="secondary" disabled={!accountStorageReady || flowScanRunning || serviceAccounts.length === 0}
+                  onClick={() => void checkAllFlowProfiles()}>
+                  {flowScanRunning ? "Checking Flow profiles…" : "Check & Re-login All"}
+                </button>
+              )}
+              {view === "accounts" && activeService !== "flow" && (
+                <button className="secondary" disabled={!accountStorageReady || bulkShareRunning || shareableSources.length === 0}
+                  onClick={openBulkShare}>Bulk share</button>
+              )}
+              {view === "accounts" && <button className="primary" disabled={!accountStorageReady || flowScanRunning || bulkShareRunning} onClick={handleAddAccount}>
+                + Add account
+              </button>}
+            </div>
+          )}
+        </header>
+        {view === "accounts" && (
+          <ProfileSwitcher accounts={workspaceAccounts} activeId={workspaceMemory[activeService]} onSelect={openProfile} />
+        )}
+        <section className={view === "settings" ? "settings-sheet" : "accounts-sheet"}>
+        {view !== "settings" && (
+          <div className="profiles-heading">
+            <div className="profiles-title"><h2>Profiles</h2><span>{view === "favorites" ? favoriteCount : serviceAccounts.length}</span></div>
+            <div className="profile-list-controls">
               {view === "accounts" && (
                 <div className="profile-sort-controls">
                   <label className="profile-sort-wrap">
@@ -850,22 +846,9 @@ export default function App() {
                   placeholder="Search accounts..."
                 />
               </div>
-              {view === "accounts" && activeService === "flow" && (
-                <button className="secondary" disabled={!accountStorageReady || flowScanRunning || serviceAccounts.length === 0}
-                  onClick={() => void checkAllFlowProfiles()}>
-                  {flowScanRunning ? "Checking Flow profiles…" : "Check & Re-login All"}
-                </button>
-              )}
-              {view === "accounts" && activeService !== "flow" && (
-                <button className="secondary" disabled={!accountStorageReady || bulkShareRunning || shareableSources.length === 0}
-                  onClick={openBulkShare}>+ Bulk share</button>
-              )}
-              {view === "accounts" && <button className="primary" disabled={!accountStorageReady || flowScanRunning || bulkShareRunning} onClick={handleAddAccount}>
-                + Add account
-              </button>}
             </div>
-          )}
-        </header>
+          </div>
+        )}
         {accountStorageError && <div className="cache-status" role="alert">{accountStorageError}</div>}
         {cacheNotice && (
           <div className="cache-status" role="status">
@@ -926,18 +909,21 @@ export default function App() {
           </>
         ) : (
           <>
-            {!accountsLoaded && <p className="account-empty" role="status">Loading accounts...</p>}
+            {!accountsLoaded && <p className="account-empty" role="status">Loading saved profiles…</p>}
             {accountsLoaded && accountStorageReady && displayed.length === 0 && (
               <div className="account-empty" role="status">
                 <h2>{query ? "No matching accounts" : view === "favorites" ? "No favorites yet" : `No ${SERVICES[activeService].shortName} accounts yet`}</h2>
                 <p>{query ? "Try a different profile name." : view === "favorites" ? "Mark an account as a favorite to find it here." : "Add an account to create your first profile for this service."}</p>
               </div>
             )}
+            <div className="profiles-scroll-region">
             <div className="grid">
               {displayed.map((a) => (
                 <Card
                   key={a.id}
                   a={a}
+                  resumable={workspaceMemory[serviceOf(a)] === a.id}
+                  sessionSource={accounts.find((source) => source.id === a.flowSessionId)?.name}
                   menuOpen={menu === a.id}
                   onMenu={() => setMenu(menu === a.id ? null : a.id)}
                   onOpen={() => openProfile(a)}
@@ -958,8 +944,10 @@ export default function App() {
               ))}
 
             </div>
+            </div>
           </>
         )}
+        </section>
         {dialog && (
           <div className="overlay">
             <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title">
@@ -1086,6 +1074,45 @@ export default function App() {
     </div>
   )
 }
+function ProfileSwitcher({ accounts, activeId, disabled: closing = false, onSelect }: {
+  accounts: Account[]
+  activeId?: string
+  disabled?: boolean
+  onSelect: (account: Account) => void
+}) {
+  const shortcutListRef = useRef<HTMLDivElement>(null)
+  const revealShortcuts = useRef<"before" | "after" | null>(null)
+  const [moreBefore, setMoreBefore] = useState(0)
+  const [moreAfter, setMoreAfter] = useState(2)
+  useEffect(() => {
+    const list = shortcutListRef.current
+    if (!list) return
+    if (revealShortcuts.current) {
+      list.scrollLeft = revealShortcuts.current === "before" ? 0 : list.scrollWidth
+      revealShortcuts.current = null
+    } else {
+      const selected = list.querySelector<HTMLElement>("[aria-current]")
+      if (selected) {
+        const left = selected.offsetLeft - list.offsetLeft
+        if (left < list.scrollLeft) list.scrollLeft = left
+        else if (left + selected.offsetWidth > list.scrollLeft + list.clientWidth) list.scrollLeft = left + selected.offsetWidth - list.clientWidth
+      }
+    }
+  }, [activeId, accounts, moreBefore, moreAfter])
+  const currentIndex = Math.max(0, accounts.findIndex((candidate) => candidate.id === activeId))
+  const [shortcutStart, shortcutEnd] = shortcutBounds(accounts.length, currentIndex, moreBefore, moreAfter)
+  return (
+      <nav className="account-shortcuts" aria-label="Account shortcuts">
+        <button className="shortcut-more" disabled={shortcutStart === 0 || closing} onClick={() => { revealShortcuts.current = "before"; setMoreBefore((value) => value + 5) }} aria-label="Earlier profiles" title="Earlier profiles"><img src="/icons/next.svg" width="16" height="16" alt="" className="previous-arrow" /></button>
+        <div className="shortcut-list" ref={shortcutListRef}>
+          {accounts.slice(shortcutStart, shortcutEnd).map((candidate) => <button key={candidate.id}
+            className={candidate.id === activeId ? "active" : ""} aria-current={candidate.id === activeId ? "true" : undefined}
+            disabled={closing} title={candidate.name} onClick={() => onSelect(candidate)}><span>{candidate.name}</span></button>)}
+        </div>
+        <button className="shortcut-more" disabled={shortcutEnd === accounts.length || closing} onClick={() => { revealShortcuts.current = "after"; setMoreAfter((value) => value + 5) }} aria-label="Later profiles" title="Later profiles"><img src="/icons/next.svg" width="16" height="16" alt="" /></button>
+      </nav>
+  )
+}
 function Brand() {
   return (
     <div className="brand">
@@ -1109,7 +1136,7 @@ function Sidebar({
   return (
     <aside>
       <Brand />
-      <div className="side-label">WORKSPACE</div>
+      <div className="side-label">Workspace</div>
       {(Object.keys(SERVICES) as ServiceId[]).map((id) => <button key={id}
         className={(view === "accounts" || view === "flow") && activeService === id ? "active" : ""}
         aria-current={(view === "accounts" || view === "flow") && activeService === id ? "page" : undefined}
@@ -1132,12 +1159,7 @@ function Sidebar({
   )
 }
 function SidebarIcon({ name }: { name: "favorites" | "settings" }) {
-  const common = { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true }
-  const paths = {
-    favorites: <path d="m12 4 2.5 5.1 5.6.8-4 4 1 5.6-5.1-2.7-5.1 2.7 1-5.6-4-4 5.6-.8L12 4Z" />,
-    settings: <><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="9" cy="6" r="1.8" fill="currentColor" stroke="none" /><circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none" /><circle cx="9" cy="18" r="1.8" fill="currentColor" stroke="none" /></>,
-  }
-  return <svg className="sidebar-icon" {...common}>{paths[name]}</svg>
+  return <img className="sidebar-icon" src={`/icons/${name === "favorites" ? "star-nav" : "settings"}.svg`} width="18" height="18" alt="" />
 }
 function UpdatesPage() {
   type UpdatePhase = "checking" | "upToDate" | "available" | "downloading" | "installing" | "relaunching" | "error"
@@ -1344,6 +1366,8 @@ function InfoPage() {
 
 function Card({
   a,
+  resumable,
+  sessionSource,
   menuOpen,
   onMenu,
   onOpen,
@@ -1358,6 +1382,8 @@ function Card({
   onPointerDown,
 }: {
   a: Account
+  resumable: boolean
+  sessionSource?: string
   menuOpen: boolean
   onMenu: () => void
   onOpen: () => void
@@ -1372,12 +1398,34 @@ function Card({
   onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void
 }) {
   const service = SERVICES[serviceOf(a)]
+  const menuButtonRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 })
+  useLayoutEffect(() => {
+    if (!menuOpen) return
+    const placeMenu = () => {
+      const anchor = menuButtonRef.current?.getBoundingClientRect()
+      const menu = menuRef.current
+      if (!anchor || !menu) return
+      const below = anchor.bottom + 4
+      setMenuPosition({
+        top: Math.max(8, below + menu.offsetHeight <= window.innerHeight - 8 ? below : anchor.top - menu.offsetHeight - 4),
+        left: Math.max(8, Math.min(window.innerWidth - menu.offsetWidth - 8, anchor.right - menu.offsetWidth)),
+      })
+    }
+    placeMenu()
+    window.addEventListener("resize", placeMenu)
+    window.addEventListener("scroll", placeMenu, true)
+    return () => {
+      window.removeEventListener("resize", placeMenu)
+      window.removeEventListener("scroll", placeMenu, true)
+    }
+  }, [menuOpen])
   return (
     <article
       data-account-id={a.id}
-      className={`card ${isDragging ? "is-dragging" : ""} ${dropPosition ? `is-drop-${dropPosition}` : ""}`}
+      className={`card ${resumable ? "is-resumable" : ""} ${isDragging ? "is-dragging" : ""} ${dropPosition ? `is-drop-${dropPosition}` : ""}`}
     >
-      <div className="card-top">
         <button
           type="button"
           className="drag-handle"
@@ -1386,8 +1434,9 @@ function Card({
           aria-label={`Reorder ${a.name}`}
           title={dragEnabled ? "Drag to reorder" : undefined}
         >
-          <span aria-hidden="true">⠿</span>
+          <img src="/icons/grip.svg" width="16" height="16" alt="" />
         </button>
+      <div className="card-top">
         <div className="card-actions">
           <button
             className={`star ${a.favorite ? "fav" : ""}`}
@@ -1395,14 +1444,14 @@ function Card({
             aria-label={a.favorite ? "Remove from favorites" : "Add to favorites"}
             aria-pressed={a.favorite}
           >
-            {a.favorite ? "★" : "☆"}
+            {a.favorite ? "★" : <img src="/icons/star.svg" width="16" height="16" alt="" />}
           </button>
           <div className="menu-wrap">
-            <button className="more" onClick={onMenu} aria-label={`Options for ${a.name}`} aria-expanded={menuOpen}>
-              •••
+            <button ref={menuButtonRef} className="more" onClick={onMenu} aria-label={`Options for ${a.name}`} aria-expanded={menuOpen}>
+              <img src="/icons/more.svg" width="16" height="16" alt="" />
             </button>
             {menuOpen && (
-              <div className="account-menu">
+              <div ref={menuRef} className="account-menu" style={menuPosition}>
                 <button onClick={onRename}>Rename</button>
                 <button onClick={onFavorite}>
                   {a.favorite ? "Remove from Favorites" : "Add to Favorites"}
@@ -1427,10 +1476,10 @@ function Card({
             draggable={false}
           />
         </div>
-        <div className="account-name"><h2 title={a.name}>{a.name}</h2><p>{service.name}</p></div>
+        <div className="account-name"><h2 title={a.name}>{a.name}</h2><p>{a.flowSessionId ? <><img src={SERVICES.flow.logo} width="12" height="12" alt="" />Flow session · {sessionSource || "Source profile unavailable"}</> : service.name}</p></div>
       </div>
       <button className="primary wide" onClick={onOpen}>
-        Open {service.shortName}
+        {resumable ? "Resume" : `Open ${service.shortName}`}
       </button>
     </article>
   )
@@ -1748,29 +1797,9 @@ function FlowShell({
   const [bookmarkError, setBookmarkError] = useState("")
   const [editingBookmarkId, setEditingBookmarkId] = useState<string | null>(null)
   const [bookmarkMenu, setBookmarkMenu] = useState<{ id: string; left: number; top: number } | null>(null)
-  const shortcutListRef = useRef<HTMLDivElement>(null)
-  const revealShortcuts = useRef<"before" | "after" | null>(null)
-  const [moreBefore, setMoreBefore] = useState(0)
-  const [moreAfter, setMoreAfter] = useState(0)
-  useEffect(() => {
-    const list = shortcutListRef.current
-    if (!list) return
-    if (revealShortcuts.current) {
-      list.scrollLeft = revealShortcuts.current === "before" ? 0 : list.scrollWidth
-      revealShortcuts.current = null
-    } else {
-      const selected = list.querySelector<HTMLElement>("[aria-current]")
-      if (selected) {
-        const left = selected.offsetLeft - list.offsetLeft
-        if (left < list.scrollLeft) list.scrollLeft = left
-        else if (left + selected.offsetWidth > list.scrollLeft + list.clientWidth) list.scrollLeft = left + selected.offsetWidth - list.clientWidth
-      }
-    }
-  }, [account.id, moreBefore, moreAfter])
   const [closing, setClosing] = useState(false)
   const stopped = useRef(false)
   const currentIndex = accounts.findIndex((candidate) => candidate.id === account.id)
-  const [shortcutStart, shortcutEnd] = shortcutBounds(accounts.length, currentIndex, moreBefore, moreAfter)
   const neighborIds = neighborIndices(accounts.length, currentIndex, preloadSides).map((index) => accounts[index].id)
   const neighborKey = neighborIds.join(",")
   const containerRef = useRef<HTMLDivElement>(null)
@@ -1986,16 +2015,17 @@ function FlowShell({
     <div className={`flow-shell ${bookmarkService ? "has-bookmarks" : ""}`}>
       <div className="flow-bar">
         <button className="back" disabled={closing} onClick={onBack}>‹ Accounts</button>
-        <button className="back" disabled={closing} onClick={onAddAccount}>+ Add account</button>
-        <span className="flow-status" role="status">{status}</span>
+        <strong className="workspace-service">{service.shortName}</strong>
+        <span className={`flow-status ${status === `${service.name} workspace` ? "is-ready" : ""}`} role="status">{status}</span>
         <div className="flow-controls">
           <strong className="active-profile-name" title={account.name}>{account.name}</strong>
+          <button className="back" disabled={closing} onClick={onAddAccount}>Add account</button>
           <select className="close-workspaces" aria-label="Close workspaces" value="" disabled={closing}
             onChange={(event) => {
               const scope = event.target.value
               if (scope === "profile" || scope === "service" || scope === "all") void closeWorkspaces(scope)
             }}>
-            <option value="" disabled>{closing ? "Closing..." : "Close"}</option>
+            <option value="" disabled>{closing ? "Closing..." : "Close current"}</option>
             <option value="profile">Close current profile</option>
             <option value="service">Close {service.shortName}</option>
             <option value="all">Close all services</option>
@@ -2006,15 +2036,7 @@ function FlowShell({
         </div>
       </div>
       <DownloadNotice message={downloadNotice} onDismiss={onDismissDownload} />
-      <nav className="account-shortcuts" aria-label="Account shortcuts">
-        <button className="shortcut-more" disabled={shortcutStart === 0 || closing} onClick={() => { revealShortcuts.current = "before"; setMoreBefore((value) => value + 5) }}>Oldest more</button>
-        <div className="shortcut-list" ref={shortcutListRef}>
-          {accounts.slice(shortcutStart, shortcutEnd).map((candidate) => <button key={candidate.id}
-            className={candidate.id === account.id ? "active" : ""} aria-current={candidate.id === account.id ? "true" : undefined}
-            disabled={closing} title={candidate.name} onClick={() => onSelectAccount(candidate)}>{candidate.name}</button>)}
-        </div>
-        <button className="shortcut-more" disabled={shortcutEnd === accounts.length || closing} onClick={() => { revealShortcuts.current = "after"; setMoreAfter((value) => value + 5) }}>Latest more</button>
-      </nav>
+      <ProfileSwitcher accounts={accounts} activeId={account.id} disabled={closing} onSelect={onSelectAccount} />
       {bookmarkService && (
         <nav className="flow-bookmark-bar" aria-label={`${service.name} bookmarks`}>
           <button type="button" className="flow-bookmark flow-bookmark-home" onClick={() => void navigateBookmark(service.url, service.shortName)}>
@@ -2055,6 +2077,7 @@ function FlowShell({
           <button type="button" role="menuitem" className="danger-item" onClick={() => removeBookmark(menuBookmark)}>Remove bookmark</button>
         </div>
       )}
+      <div className="workspace-sheet">
       <div ref={containerRef} className="webview-host" aria-label={`${service.name} WebView`}>
         {openError && <div className="workspace-error" role="alert"><h2>Unable to open {service.name}</h2><p>{openError}</p><button className="secondary" onClick={onBack}>Back to accounts</button></div>}
         {bookmarkManagerOpen && bookmarkService && (
@@ -2106,6 +2129,7 @@ function FlowShell({
             </div>
           </section>
         )}
+      </div>
       </div>
     </div>
   )
