@@ -1,19 +1,25 @@
-/* Approved Nadibear design. These styles belong to Flowpilot, never service pages. */
+/* Approved layout, comfort revision. Styles belong to Flowpilot, never service pages. */
 @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/ibm-plex-sans-400.ttf') format('truetype'); }
 @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 500; font-display: swap; src: url('/fonts/ibm-plex-sans-500.ttf') format('truetype'); }
 @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/ibm-plex-sans-600.ttf') format('truetype'); }
 :root {
   color-scheme: light;
-  --canvas: #e2ebfd;
-  --surface: #fff;
-  --raised: #f5f8fe;
-  --selected: #eaf1fc;
-  --line: #dfe7f4;
-  --rule: #edf1f7;
-  --text: #233650;
-  --muted: #58677c;
-  --accent: #305db5;
-  --pink: #f55f94;
+  --canvas: #bdcadd;
+  --surface: #dce3ed;
+  --raised: #e8edf4;
+  --selected: #c4d3e8;
+  --line: #b8c6d8;
+  --rule: #cbd4e1;
+  --text: #213149;
+  --muted: #44546c;
+  --accent: #294f91;
+  --tab-idle: #cbd5e3;
+  --tab-hover: #b3c4dc;
+  --tab-current: #355b91;
+  --tab-current-hover: #2b4e80;
+  --on-current: #f1f5fb;
+  --pink: #e36a95;
+  --pink-hover: #e882a5;
   --pink-ink: #4b1530;
   --control: #7f91aa;
   --danger: #a72d4d;
@@ -32,7 +38,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 aside .brand { height: 40px; flex: 0 0 40px; padding: 8px; margin-bottom: 20px; gap: 10px; letter-spacing: 0; color: var(--accent); font-size: 14px; font-weight: 600; }
 .brand-image { width: 24px; height: 24px; filter: none; }
 aside button { height: 40px; min-height: 40px; padding: 0 12px; border-radius: 10px; font-size: 14px; font-weight: 400; color: var(--muted); gap: 12px; }
-aside button:hover { background: rgb(255 255 255 / 55%); color: var(--text); }
+aside button:hover { background: var(--tab-idle); color: var(--text); }
 aside button.active { background: var(--surface); color: var(--text); font-weight: 600; }
 aside .side-label { color: var(--muted); font-size: 12px; line-height: 16px; font-weight: 400; letter-spacing: 0; padding: 0; margin-bottom: 4px; }
 .sidebar-icon { width: 18px; height: 18px; flex: 0 0 18px; }
@@ -49,7 +55,7 @@ aside .side-bottom > .owner-label { margin: 0; color: var(--text); font-size: 14
 .header-actions { display: flex; align-items: center; gap: 12px; margin: 0; }
 .primary, .secondary, .danger { height: 34px; border-radius: 8px; padding: 0 16px; font-size: 14px; font-weight: 500; white-space: nowrap; }
 .primary { background: var(--pink); color: var(--pink-ink); }
-.primary:hover { background: #f47aa6; }
+.primary:hover { background: var(--pink-hover); }
 .secondary { background: var(--surface); color: var(--accent); }
 .secondary:hover { background: var(--selected); }
 .danger { background: var(--danger); color: #fff; }
@@ -71,6 +77,7 @@ aside .side-bottom > .owner-label { margin: 0; color: var(--text); font-size: 14
 .search { width: 300px; height: 34px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--control); border-radius: 16px; padding: 0 12px; background: var(--raised); }
 .search > svg { order: 2; color: var(--text); flex: 0 0 16px; }
 .search input { min-width: 0; width: 100%; background: none; border: 0; color: var(--text); font-size: 12px; outline: 0; }
+.search input:focus-visible { outline: none; }
 .search input::placeholder { color: var(--muted); opacity: 1; }
 .search:focus-within { border-color: var(--accent); box-shadow: none; outline: 2px solid var(--accent); outline-offset: 2px; }
 .accounts-page .grid { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; gap: 0; padding: 0 0 4px; }
@@ -122,20 +129,23 @@ aside .side-bottom > .owner-label { margin: 0; color: var(--text); font-size: 14
 .flow-shell, .app.full .flow-shell { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--canvas); color: var(--text); }
 .flow-bar { height: 48px; min-height: 48px; flex: 0 0 48px; padding: 0 24px; gap: 12px; background: var(--canvas); border: 0; }
 .back, .fullscreen { height: 32px; padding: 0 8px; border-radius: 8px; font-size: 14px; color: var(--accent); white-space: nowrap; background: transparent; }
-.back:hover, .fullscreen:hover { background: rgb(255 255 255 / 55%); }
+.back:hover, .fullscreen:hover { background: var(--tab-idle); }
 .workspace-service { font-size: 16px; font-weight: 600; white-space: nowrap; }
 .flow-status { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .flow-controls { min-width: 0; gap: 12px; }
 .active-profile-name { color: var(--text); font-size: 14px; font-weight: 600; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .close-workspaces { width: 148px; height: 32px; color: var(--accent); background: var(--surface); border: 1px solid transparent; border-radius: 8px; padding: 0 12px; }
 .account-shortcuts { display: flex; align-items: center; gap: 4px; height: 52px; flex: 0 0 52px; padding: 0 24px; background: var(--canvas); min-width: 0; }
-.shortcut-list { display: flex; flex: 1; flex-wrap: nowrap; align-items: stretch; gap: 4px; height: 44px; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.shortcut-list { display: flex; flex: 1; flex-wrap: nowrap; align-items: stretch; gap: 6px; height: 44px; padding: 4px; margin-inline: -4px; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .shortcut-list::-webkit-scrollbar { display: none; }
-.shortcut-list button { display: flex; align-items: flex-start; justify-content: flex-start; flex: 0 0 136px; width: 136px; padding: 10px 10px 0; border-radius: 0; background: transparent; color: var(--muted); font-size: 14px; white-space: nowrap; }
-.shortcut-list button > span { position: relative; max-width: 112px; height: 34px; display: block; overflow: hidden; text-overflow: ellipsis; }
-.shortcut-list button.active { color: var(--accent); font-weight: 600; }
-.shortcut-list button.active > span::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--accent); }
-.shortcut-list button:hover { color: var(--accent); }
+/* Current account is a persistent selection, distinct from hover and keyboard focus.
+   The filled blue tab is the explicit user-approved exception to neutral navigation. */
+.shortcut-list button { display: flex; align-items: center; justify-content: flex-start; flex: 0 0 136px; width: 136px; padding: 0 10px; border: 1px solid transparent; border-radius: 8px; background: var(--tab-idle); color: var(--text); font-size: 14px; white-space: nowrap; }
+.shortcut-list button > span { max-width: 114px; display: block; overflow: hidden; text-overflow: ellipsis; }
+.shortcut-list button:hover:not(:disabled) { background: var(--tab-hover); }
+.shortcut-list button.active { background: var(--tab-current); color: var(--on-current); border-color: var(--tab-current); font-weight: 600; }
+.shortcut-list button.active:hover:not(:disabled) { background: var(--tab-current-hover); border-color: var(--tab-current-hover); }
+.shortcut-list button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .shortcut-more { display: flex; align-items: center; justify-content: center; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 8px; background: transparent; }
 .shortcut-more:hover:not(:disabled) { background: var(--selected); }
 .shortcut-more:disabled { display: none; }
