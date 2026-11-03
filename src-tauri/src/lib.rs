@@ -64,9 +64,9 @@ async fn preload_workspace(app: tauri::AppHandle, account_id: String, service: S
 }
 
 #[tauri::command]
-async fn close_workspaces(app: tauri::AppHandle, service: Option<String>) -> Result<(), String> {
+async fn close_workspaces(app: tauri::AppHandle, service: Option<String>, account_id: Option<String>) -> Result<(), String> {
     let operation_app = app.clone();
-    run_on_ui_thread(&app, move || webview_manager::close_workspaces(&operation_app, service)).await
+    run_on_ui_thread(&app, move || webview_manager::close_workspaces(&operation_app, service, account_id)).await
 }
 
 #[tauri::command]

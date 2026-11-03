@@ -43,3 +43,43 @@ test('preload preference rejects invalid values and preserves Off', () => {
   saved='0'; assert.equal(exportsObject.readPreloadSides(),0)
   saved='5'; assert.equal(exportsObject.readPreloadSides(),5)
 })
+
+test('sidebar resumes the last opened profile independently for each service', () => {
+  const accounts = [{ id: 'c', service: 'chatgpt' }, { id: 'z', service: 'claude' }, { id: 'x', service: 'claude' }]
+  let memory = {}
+  assert.equal(exportsObject.resumableAccount(accounts, memory, 'chatgpt'), undefined)
+  memory = exportsObject.rememberWorkspace(memory, 'chatgpt', 'c')
+  memory = exportsObject.rememberWorkspace(memory, 'claude', 'x')
+  memory = exportsObject.rememberWorkspace(memory, 'claude', 'z')
+  assert.equal(exportsObject.resumableAccount(accounts, memory, 'chatgpt').id, 'c')
+  assert.equal(exportsObject.resumableAccount(accounts, memory, 'claude').id, 'z')
+  assert.equal(exportsObject.resumableAccount(accounts, memory, 'flow'), undefined)
+})
+
+test('closing ChatGPT C clears its resume target while Claude Z stays resumable', () => {
+  const accounts = [{ id: 'c', service: 'chatgpt' }, { id: 'z', service: 'claude' }]
+  const before = { chatgpt: 'c', claude: 'z' }
+  const after = exportsObject.forgetWorkspaces(before, 'profile', 'chatgpt', 'c')
+  assert.equal(exportsObject.resumableAccount(accounts, after, 'chatgpt'), undefined)
+  assert.equal(exportsObject.resumableAccount(accounts, after, 'claude').id, 'z')
+  assert.deepEqual(before, { chatgpt: 'c', claude: 'z' })
+})
+
+test('service close clears one service; all-service close clears every resume target', () => {
+  const before = { chatgpt: 'c', claude: 'z', flow: 'f' }
+  const after = exportsObject.forgetWorkspaces(before, 'service', 'claude', 'z')
+  assert.equal(after.claude, undefined)
+  assert.equal(after.chatgpt, 'c')
+  assert.equal(after.flow, 'f')
+  assert.equal(Object.keys(exportsObject.forgetWorkspaces(after, 'all', 'chatgpt', 'c')).length, 0)
+  // Closing/deleting an older card cannot discard a newer resume target.
+  assert.equal(exportsObject.forgetWorkspaces(before, 'profile', 'claude', 'x'), before)
+})
+
+test('resume ignores deleted profiles, wrong services, and persisted recent-opened history', () => {
+  const accounts = [{ id: 'c', service: 'chatgpt', lastOpenedAt: 999 }, { id: 'legacy' }]
+  assert.equal(exportsObject.resumableAccount(accounts, {}, 'chatgpt'), undefined)
+  assert.equal(exportsObject.resumableAccount(accounts, { claude: 'c' }, 'claude'), undefined)
+  assert.equal(exportsObject.resumableAccount(accounts, { chatgpt: 'deleted' }, 'chatgpt'), undefined)
+  assert.equal(exportsObject.resumableAccount(accounts, { flow: 'legacy' }, 'flow').id, 'legacy')
+})

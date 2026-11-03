@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
-import { neighborIndices, shortcutBounds, readPreloadSides } from "./services/workspace-policy"
+import { neighborIndices, shortcutBounds, readPreloadSides, rememberWorkspace, forgetWorkspaces, resumableAccount, type WorkspaceMemory, type WorkspaceCloseScope } from "./services/workspace-policy"
 import { loadAccounts, saveAccounts } from "./services/account-store"
 import { availableSharedSources, defaultSortDirection, PROFILE_SORT_OPTIONS, readProfileSort, sortProfileCards, type ProfileSort, type ProfileSortKey } from "./services/profile-features"
 
@@ -137,6 +137,8 @@ export default function App() {
   const [query, setQuery] = useState("")
   const [view, setView] = useState<AppView>("accounts")
   const [active, setActive] = useState<Account | null>(null)
+  const [workspaceMemory, setWorkspaceMemory] = useState<WorkspaceMemory>({})
+  const [workspaceClosing, setWorkspaceClosing] = useState(false)
   const [fullView, setFullView] = useState(false)
   const [dialog, setDialog] = useState<Account | null>(null)
   const [menu, setMenu] = useState<string | null>(null)
@@ -210,6 +212,7 @@ export default function App() {
         return
       }
       setAccounts((current) => current.filter((account) => account.id !== removing.id))
+      setWorkspaceMemory((current) => forgetWorkspaces(current, "profile", serviceOf(removing), removing.id))
       if (active?.id === removing.id) {
         setActive(null)
         setFullView(false)
@@ -408,6 +411,24 @@ export default function App() {
     const timestamp = Date.now()
     setAccounts((current) => current.map((item) =>
       item.id === account.id ? { ...item, lastOpenedAt: timestamp } : item))
+  }
+  const openProfile = (account: Account) => {
+    markProfileOpened(account)
+    setActiveService(serviceOf(account))
+    setActive(account)
+    setView("flow")
+  }
+  const selectService = (service: ServiceId) => {
+    if (workspaceClosing) return
+    setActiveService(service)
+    setQuery("")
+    setMenu(null)
+    const remembered = resumableAccount(accounts, workspaceMemory, service)
+    if (remembered) openProfile(remembered)
+    else {
+      setActive(null)
+      setView("accounts")
+    }
   }
   const handleAddAccount = () => {
     setRenamingAccount(null)
@@ -684,14 +705,21 @@ export default function App() {
   if (view === "flow" && active)
     return (
       <div className={`app ${fullView ? "full" : ""}`}>
-        {!fullView && <Sidebar view="flow" setView={setView} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />}
+        {!fullView && <Sidebar view="flow" setView={setView} accounts={accounts} activeService={activeService} onService={selectService} disabled={workspaceClosing} />}
         <main className="content flow-content">
           <FlowShell
             downloadNotice={downloadNotice}
             onDismissDownload={() => setDownloadNotice("")}
             account={active}
             preloadSides={preloadSides}
-            onClosed={() => { setActive(null); setFullView(false); setView("accounts") }}
+            onOpened={(account) => setWorkspaceMemory((current) => rememberWorkspace(current, serviceOf(account), account.id))}
+            onClosingChange={setWorkspaceClosing}
+            onClosed={(scope) => {
+              setWorkspaceMemory((current) => forgetWorkspaces(current, scope, serviceOf(active), active.id))
+              setActive(null)
+              setFullView(false)
+              setView("accounts")
+            }}
             accounts={serviceAccounts}
             bookmarks={
               supportsBookmarks(serviceOf(active))
@@ -749,7 +777,7 @@ export default function App() {
     )
   return (
     <div className="app">
-      <Sidebar view={view} setView={setView} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />
+      <Sidebar view={view} setView={setView} accounts={accounts} activeService={activeService} onService={selectService} />
       <main className={`content ${view === "accounts" || view === "favorites" ? "accounts-page" : ""}`}>
         <DownloadNotice message={downloadNotice} onDismiss={() => setDownloadNotice("")} />
         <header>
@@ -907,12 +935,7 @@ export default function App() {
                   a={a}
                   menuOpen={menu === a.id}
                   onMenu={() => setMenu(menu === a.id ? null : a.id)}
-                  onOpen={() => {
-                    markProfileOpened(a)
-                    setActiveService(serviceOf(a))
-                    setActive(a)
-                    setView("flow")
-                  }}
+                  onOpen={() => openProfile(a)}
                   onFavorite={() => handleToggleFavorite(a)}
                   onDelete={() => handleDelete(a)}
                   onRename={() => handleRename(a)}
@@ -1069,11 +1092,12 @@ function Brand() {
 function Sidebar({
   view,
   setView,
-  accounts, activeService, onService,
+  accounts, activeService, onService, disabled = false,
 }: {
   accounts: Account[]
   activeService: ServiceId
   onService: (service: ServiceId) => void
+  disabled?: boolean
   view: AppView
   setView: (view: AppView) => void
 }) {
@@ -1084,15 +1108,15 @@ function Sidebar({
       {(Object.keys(SERVICES) as ServiceId[]).map((id) => <button key={id}
         className={(view === "accounts" || view === "flow") && activeService === id ? "active" : ""}
         aria-current={(view === "accounts" || view === "flow") && activeService === id ? "page" : undefined}
-        title={SERVICES[id].name} onClick={() => onService(id)}>
+        disabled={disabled} title={SERVICES[id].name} onClick={() => onService(id)}>
         <img className="sidebar-service-logo" src={SERVICES[id].logo} alt="" />
         <span>{SERVICES[id].shortName}</span><b className="service-count">{accounts.filter((a) => serviceOf(a) === id).length}</b>
       </button>)}
-      <button className={view === "favorites" ? "active" : ""} title="Favorites" onClick={() => setView("favorites")}>
+      <button disabled={disabled} className={view === "favorites" ? "active" : ""} title="Favorites" onClick={() => setView("favorites")}>
         <SidebarIcon name="favorites" /><span>Favorites</span>
       </button>
       <div className="sidebar-spacer" />
-      <button className={view === "settings" ? "active" : ""} title="Settings" onClick={() => setView("settings")}>
+      <button disabled={disabled} className={view === "settings" ? "active" : ""} title="Settings" onClick={() => setView("settings")}>
         <SidebarIcon name="settings" /><span>Settings</span>
       </button>
       <div className="side-bottom">
@@ -1679,7 +1703,7 @@ function DownloadNotice({ message, onDismiss }: { message: string; onDismiss: ()
 
 function FlowShell({
   downloadNotice, onDismissDownload,
-  preloadSides, onClosed,
+  preloadSides, onClosed, onOpened, onClosingChange,
   account,
   accounts,
   bookmarks,
@@ -1693,7 +1717,9 @@ function FlowShell({
   downloadNotice: string
   onDismissDownload: () => void
   preloadSides: number
-  onClosed: () => void
+  onClosed: (scope: WorkspaceCloseScope) => void
+  onOpened: (account: Account) => void
+  onClosingChange: (closing: boolean) => void
   account: Account
   accounts: Account[]
   bookmarks: ServiceBookmark[]
@@ -1767,6 +1793,7 @@ function FlowShell({
     })
       .then(async (epoch) => {
         if (cancelled || stopped.current) return
+        onOpened(account)
         setStatus(`${service.name} workspace`)
         containerRef.current?.dispatchEvent(new Event("flowpilot-webview-ready"))
         for (const id of neighborIds) {
@@ -1819,18 +1846,27 @@ function FlowShell({
       window.removeEventListener("resize", dismiss)
     }
   }, [bookmarkMenu])
-  const closeWorkspaces = async (all: boolean) => {
+  const closeWorkspaces = async (scope: WorkspaceCloseScope) => {
+    if (stopped.current) return
     stopped.current = true
     setClosing(true)
+    onClosingChange(true)
     try {
-      await invoke("close_workspaces", { service: all ? null : serviceId })
-      onClosed()
+      await invoke("close_workspaces", {
+        service: scope === "all" ? null : serviceId,
+        accountId: scope === "profile" ? account.id : null,
+      })
+      onClosed(scope)
     } catch (error) {
       setStatus(`Unable to close workspaces: ${String(error)}`)
+      stopped.current = false
       setClosing(false)
+    } finally {
+      onClosingChange(false)
     }
   }
   const showWebview = async () => {
+    if (stopped.current) return
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
     setBookmarkManagerOpen(false)
@@ -1855,10 +1891,11 @@ function FlowShell({
     }
   }
   const navigateBookmark = async (url: string, name: string) => {
-    if (!bookmarkService) return
+    if (!bookmarkService || stopped.current) return
     try {
       setBookmarkMenu(null)
       if (bookmarkManagerOpen) await showWebview()
+      if (stopped.current) return
       setStatus(`Opening ${name}...`)
       await invoke("navigate_service_bookmark", { accountId: account.id, service: bookmarkService, url })
       setStatus(`Opened ${name}`)
@@ -1868,7 +1905,7 @@ function FlowShell({
     }
   }
   const openBookmarkManager = async () => {
-    if (!bookmarkService) return
+    if (!bookmarkService || stopped.current) return
     try {
       await invoke("close_google_flow", { accountId: account.id, service: serviceId })
       setBookmarkManagerOpen(true)
@@ -1889,6 +1926,7 @@ function FlowShell({
     clearBookmarkForm()
   }
   const editBookmark = async (bookmark: ServiceBookmark) => {
+    if (stopped.current) return
     try {
       if (!bookmarkManagerOpen) {
         await invoke("close_google_flow", { accountId: account.id, service: serviceId })
@@ -1921,6 +1959,7 @@ function FlowShell({
   }
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (stopped.current) return
       if (event.key !== "Escape") return
       if (bookmarkMenu) {
         setBookmarkMenu(null)
@@ -1939,17 +1978,21 @@ function FlowShell({
   return (
     <div className={`flow-shell ${bookmarkService ? "has-bookmarks" : ""}`}>
       <div className="flow-bar">
-        <button className="back" onClick={onBack}>‹ Accounts</button>
+        <button className="back" disabled={closing} onClick={onBack}>‹ Accounts</button>
         <span className="flow-status" role="status">{status}</span>
         <div className="flow-controls">
           <strong className="active-profile-name" title={account.name}>{account.name}</strong>
           <select className="close-workspaces" aria-label="Close workspaces" value="" disabled={closing}
-            onChange={(event) => { if (event.target.value) void closeWorkspaces(event.target.value === "all") }}>
+            onChange={(event) => {
+              const scope = event.target.value
+              if (scope === "profile" || scope === "service" || scope === "all") void closeWorkspaces(scope)
+            }}>
             <option value="" disabled>{closing ? "Closing..." : "Close"}</option>
+            <option value="profile">Close current profile</option>
             <option value="service">Close {service.shortName}</option>
             <option value="all">Close all services</option>
           </select>
-          <button className="fullscreen" onClick={onToggleFullView}>
+          <button className="fullscreen" disabled={closing} onClick={onToggleFullView}>
             {fullView ? "Exit Full View" : "Full View"}
           </button>
         </div>

@@ -950,25 +950,29 @@ fn cancel_preloads(state: &WebviewManager) -> Result<u64, String> {
     Ok(*epoch)
 }
 
+fn destroy_view<R: Runtime>(app: &AppHandle<R>, key: &str) -> Result<(), String> {
+    let state = app.state::<WebviewManager>();
+    let label = webview_label(key);
+    for (popup_label, popup) in app.webview_windows() {
+        if popup_label.starts_with(&format!("{label}-popup-")) { popup.close().map_err(|e| e.to_string())?; }
+    }
+    crate::webview_download_bridge::cancel_for_webview(&app.state::<crate::webview_download_bridge::DownloadState>(), &label);
+    if let Some(webview) = app.get_webview(&label) { webview.close().map_err(|e| e.to_string())?; }
+    state.cached_accounts.lock().map_err(|_| "webview state unavailable")?.remove(key);
+    state.automation_ports.lock().map_err(|_| "webview state unavailable")?.remove(key);
+    let mut active = state.active_account_id.lock().map_err(|_| "webview state unavailable")?;
+    if active.as_deref() == Some(key) {
+        *active = None;
+        *state.visible.lock().map_err(|_| "webview state unavailable")? = false;
+    }
+    Ok(())
+}
+
 fn destroy_views<R: Runtime>(app: &AppHandle<R>, service: Option<&str>, keep: &[String]) -> Result<(), String> {
     let state = app.state::<WebviewManager>();
     let keys: Vec<String> = state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
         .keys().filter(|key| service.map_or(true, |s| key.starts_with(&format!("{s}-"))) && !keep.contains(key)).cloned().collect();
-    for key in keys {
-        let label = webview_label(&key);
-        for (popup_label, popup) in app.webview_windows() {
-            if popup_label.starts_with(&format!("{label}-popup-")) { popup.close().map_err(|e| e.to_string())?; }
-        }
-        crate::webview_download_bridge::cancel_for_webview(&app.state::<crate::webview_download_bridge::DownloadState>(), &label);
-        if let Some(webview) = app.get_webview(&label) { webview.close().map_err(|e| e.to_string())?; }
-        state.cached_accounts.lock().map_err(|_| "webview state unavailable")?.remove(&key);
-        state.automation_ports.lock().map_err(|_| "webview state unavailable")?.remove(&key);
-        let mut active = state.active_account_id.lock().map_err(|_| "webview state unavailable")?;
-        if active.as_deref() == Some(key.as_str()) {
-            *active = None;
-            *state.visible.lock().map_err(|_| "webview state unavailable")? = false;
-        }
-    }
+    for key in keys { destroy_view(app, &key)?; }
     Ok(())
 }
 
@@ -994,10 +998,17 @@ pub fn preload_workspace<R: Runtime>(app: &AppHandle<R>, account_id: String, ser
     open_view(app, account_id, service, 0.0, 0.0, width, height, true)
 }
 
-pub fn close_workspaces<R: Runtime>(app: &AppHandle<R>, service: Option<String>) -> Result<(), String> {
+pub fn close_workspaces<R: Runtime>(app: &AppHandle<R>, service: Option<String>, account_id: Option<String>) -> Result<(), String> {
     if let Some(s) = &service { service_url(s)?; }
+    let target = match account_id {
+        Some(id) => Some(profile_key(service.as_deref().ok_or("service required for profile close")?, &id)?),
+        None => None,
+    };
     cancel_preloads(&app.state::<WebviewManager>())?;
-    destroy_views(app, service.as_deref(), &[])
+    match target {
+        Some(key) => destroy_view(app, &key),
+        None => destroy_views(app, service.as_deref(), &[]),
+    }
 }
 
 fn parse_bookmark_url(service: &str, url: &str) -> Result<tauri::Url, String> {
