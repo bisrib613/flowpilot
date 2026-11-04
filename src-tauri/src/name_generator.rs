@@ -72,13 +72,22 @@ fn parse_name(payload: &Value) -> Option<String> {
 // Called once only after the observed signup form asks for a name. Normal
 // logins spend no API quota. Errors fall back without logging URLs or bodies:
 // Behind the Name requires the secret in the HTTPS query string.
-pub async fn random_indonesian_name() -> Option<String> {
+pub async fn random_indonesian_name(local_name: Option<&str>) -> Option<String> {
+    let local_name = local_name.and_then(valid_local_name);
     match configured_provider().ok()? {
         Provider::Disabled => None,
-        Provider::Local => Some(crate::indonesian_names::random_name()),
-        Provider::Api(key) => Some(fetch_api_name(&key).await
-            .unwrap_or_else(crate::indonesian_names::random_name)),
+        Provider::Local => local_name,
+        Provider::Api(key) => fetch_api_name(&key).await.or(local_name),
     }
+}
+
+fn valid_local_name(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().count() > 100 ||
+        !value.chars().any(char::is_alphabetic) ||
+        value.chars().any(|c| c.is_control() || matches!(c, '<' | '>')) {
+        None
+    } else { Some(value.to_string()) }
 }
 
 async fn fetch_api_name(key: &str) -> Option<String> {
@@ -100,7 +109,7 @@ async fn fetch_api_name(key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_name, provider, Provider, DISABLED, LOCAL};
+    use super::{parse_name, provider, valid_local_name, Provider, DISABLED, LOCAL};
     use serde_json::json;
 
     #[test]
@@ -111,6 +120,15 @@ mod tests {
         assert!(matches!(provider(None, None), Provider::Local));
         assert!(matches!(provider(None, Some(" ")), Provider::Local));
         assert!(matches!(provider(Some(LOCAL), Some("env-key")), Provider::Local));
+    }
+
+    #[test]
+    fn accepts_localized_full_names_and_rejects_invalid_ipc_values() {
+        assert_eq!(valid_local_name(" Dr. Ayu Lestari, S.Kom. "), Some("Dr. Ayu Lestari, S.Kom.".into()));
+        for value in ["", "  ", "123", "<script>", "Name\nInjected"] {
+            assert_eq!(valid_local_name(value), None);
+        }
+        assert_eq!(valid_local_name(&"a".repeat(101)), None);
     }
 
     #[test]

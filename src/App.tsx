@@ -7,6 +7,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
 import { neighborIndices, shortcutBounds, readPreloadSides, rememberWorkspace, forgetWorkspaces, resumableAccount, type WorkspaceMemory, type WorkspaceCloseScope } from "./services/workspace-policy"
 import { loadAccounts, saveAccounts } from "./services/account-store"
+import { generateIndonesianName } from "./services/signup-name"
 import { availableSharedSources, defaultSortDirection, PROFILE_SORT_OPTIONS, readProfileSort, sortProfileCards, type ProfileSort, type ProfileSortKey } from "./services/profile-features"
 
 type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt" | "migoo" | "claude"
@@ -390,6 +391,7 @@ export default function App() {
         try {
           const status = await invoke<string>("run_bulk_shared_login", {
             accountId: account.id, service,
+            localName: await generateIndonesianName().catch(() => null),
           })
           setBulkShareResults((current) => ({
             ...current, [account.id]: statusLabels[status] || "Login not confirmed",
@@ -1702,7 +1704,7 @@ function NameGeneratorSettings() {
     <section className="preload-setting">
       <div>
         <h2>Indonesian signup names</h2>
-        <p>Generate Indonesian display names locally, or use Behind the Name with your own API key. If the API fails, the local generator is used. Existing accounts keep their names.</p>
+        <p>Generate Indonesian display names offline with Faker, or use Behind the Name with your own API key. If the API fails, Faker is used. Existing accounts keep their names.</p>
         <p>The generator is shared across services. ChatGPT signup is connected today; other services need their own signup adapter. ChatGPT age defaults to 27 when empty.</p>
         <p>Optional API keys are stored in Windows Credential Manager and sent only to Behind the Name.</p>
         <p>Status: <strong>{enabled ? "Enabled" : "Disabled"}</strong></p>

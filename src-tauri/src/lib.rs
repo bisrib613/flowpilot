@@ -4,7 +4,6 @@ use tauri::Emitter;
 mod account_store;
 mod google_relogin;
 mod name_generator;
-mod indonesian_names;
 mod webview_manager;
 mod native_downloads;
 mod download_settings;
@@ -248,7 +247,7 @@ async fn check_flow_profile(app: tauri::AppHandle, account_id: String) -> Result
 // before starting the next account, so shared Flow sessions are never raced.
 #[tauri::command]
 async fn run_bulk_shared_login(
-    app: tauri::AppHandle, account_id: String, service: String,
+    app: tauri::AppHandle, account_id: String, service: String, local_name: Option<String>,
 ) -> Result<&'static str, String> {
     let source_accounts = account_store::load_accounts(app.clone())?
         .ok_or("Account storage unavailable")?;
@@ -322,7 +321,7 @@ async fn run_bulk_shared_login(
                 }));
             }
             if signals.iter().any(|s| s == "signup_name_required") && !signup_name_ready {
-                signup_name = name_generator::random_indonesian_name().await;
+                signup_name = name_generator::random_indonesian_name(local_name.as_deref()).await;
                 signup_name_ready = true;
                 continue;
             }
