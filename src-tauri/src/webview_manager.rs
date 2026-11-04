@@ -605,6 +605,9 @@ fn open_view<R: Runtime>(
             
     }
         .focused(!background)
+        .initialization_script(if cfg!(all(windows, feature = "diag")) {
+            include_str!("webview_interaction_diagnostics.js")
+        } else { "" })
         .on_download(crate::native_downloads::handle)
         .on_page_load(move |webview, payload| {
             if let Some(id) = &relogin_source_id {
@@ -690,6 +693,11 @@ fn open_view<R: Runtime>(
         }
         touch_account(&state, &key)?;
         return Ok(());
+    }
+    // Match the cached-view path: creation alone does not explicitly transfer
+    // native input focus to the newly displayed service child.
+    if let Some(webview) = app.get_webview(&requested_label) {
+        webview.set_focus().map_err(|e| e.to_string())?;
     }
     *state
         .active_account_id
