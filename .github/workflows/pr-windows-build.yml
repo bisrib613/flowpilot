@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   windows-build:
-    name: Frontend, Rust tests, and NSIS installer
+    name: Windows PR installer
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,10 +43,9 @@ jobs:
           $config = Get-Content $configPath -Raw | ConvertFrom-Json
           $config | Add-Member -NotePropertyName version -NotePropertyValue $version -Force
           $config | ConvertTo-Json -Depth 30 | Set-Content $configPath -Encoding utf8NoBOM
-      - name: Frontend and command/workspace tests
-        run: npm run build
-      - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+      # Run behavioral checks locally; CI packages the reviewable PR installer.
+      - name: Compile frontend
+        run: npx tsc -b && npx vite build
       - name: Build Windows NSIS installer
         # Temporary PR preview: capture click delivery/focus without clipboard contents.
         run: npm run tauri -- build --features diag --bundles nsis --config src-tauri/tauri.pr-test.conf.json

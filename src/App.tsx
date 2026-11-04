@@ -193,7 +193,13 @@ export default function App() {
   const dragSourceIdRef = useRef<string | null>(null)
   const dragTargetIdRef = useRef<string | null>(null)
   const dragInsertAfterRef = useRef(false)
+  const dialogReturnFocus = useRef<HTMLElement | null>(null)
+  const rememberDialogTrigger = () => {
+    const focused = document.activeElement as HTMLElement | null
+    dialogReturnFocus.current = focused?.closest(".menu-wrap")?.querySelector<HTMLElement>("button.more") || focused
+  }
   const handleRename = (a: Account) => {
+    rememberDialogTrigger()
     setRenamingAccount(a)
     setNewAccountName(a.name)
     setGoogleAccountEmail(a.email || "")
@@ -202,6 +208,7 @@ export default function App() {
     setMenu(null)
   }
   const handleDelete = (a: Account) => {
+    rememberDialogTrigger()
     setDeleteError("")
     setDialog(a)
     setMenu(null)
@@ -330,6 +337,7 @@ export default function App() {
   const reverseProfileSort = () =>
     saveProfileSort({ ...profileSort, direction: profileSort.direction === "asc" ? "desc" : "asc" })
   const openBulkShare = () => {
+    rememberDialogTrigger()
     setBulkShareSelected([])
     setAddAccountError("")
     setBulkShareOpen(true)
@@ -448,6 +456,7 @@ export default function App() {
     }
   }
   const handleAddAccount = () => {
+    rememberDialogTrigger()
     setRenamingAccount(null)
     setFlowSessionId("")
     setAccountNameEdited(false)
@@ -701,7 +710,7 @@ export default function App() {
     document.addEventListener("click", dismiss)
     return () => document.removeEventListener("click", dismiss)
   }, [menu])
-  useDialogFocus(Boolean(dialog || addAccountOpen || bulkShareOpen))
+  useDialogFocus(Boolean(dialog || addAccountOpen || bulkShareOpen), dialogReturnFocus)
   if (view === "flow" && active)
     return (
       <div className={`app ${fullView ? "full" : ""}`}>

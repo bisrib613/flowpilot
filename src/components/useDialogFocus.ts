@@ -1,12 +1,12 @@
-import { useLayoutEffect } from "react"
+import { useLayoutEffect, type RefObject } from "react"
 
-export function useDialogFocus(open: boolean) {
+export function useDialogFocus(open: boolean, returnFocus: RefObject<HTMLElement>) {
   useLayoutEffect(() => {
     if (!open) return
     const dialogs = document.querySelectorAll<HTMLElement>('.dialog[role="dialog"]')
     const dialog = dialogs[dialogs.length - 1]
     if (!dialog) return
-    const previous = document.activeElement as HTMLElement | null
+    const previous = returnFocus.current || document.activeElement as HTMLElement | null
     const protectedSiblings: { element: Element; wasInert: boolean }[] = []
     // Inert every sibling on the path to the root, without making the dialog inert.
     let branch: Element = dialog.closest(".overlay") || dialog
@@ -36,5 +36,5 @@ export function useDialogFocus(open: boolean) {
       for (const { element, wasInert } of protectedSiblings) if (!wasInert) element.removeAttribute("inert")
       if (previous?.isConnected) previous.focus()
     }
-  }, [open])
+  }, [open, returnFocus])
 }
