@@ -15,6 +15,7 @@ use webview2_com::{
         COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
         COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS,
         COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
     },
 };
 #[cfg(windows)]
@@ -308,6 +309,36 @@ fn flow_builder<R: Runtime>(label: String, url: WebviewUrl, profile: PathBuf, br
         
 }
 
+// All workspace operations run on the UI thread via run_on_ui_thread. Tauri's
+// SetFocus dispatcher logs and discards MoveFocus failures, so its Ok result is
+// not a native focus acknowledgement. Propagate the actual COM result instead.
+#[cfg(windows)]
+fn focus_workspace<R: Runtime>(view: &tauri::Webview<R>) -> Result<(), String> {
+    let result = std::sync::Arc::new(Mutex::new(None));
+    let callback_result = result.clone();
+    let label = view.label().to_string();
+    view.with_webview(move |platform| {
+        let native_result = unsafe {
+            platform.controller().MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+        };
+        let status = match &native_result {
+            Ok(()) => "ok".to_string(),
+            Err(error) => format!("error hr={}", error.code().0),
+        };
+        crate::webview_download_bridge::diag("NativeFocusRequest", &format!("webview={} result={}", label, status));
+        if let Ok(mut slot) = callback_result.lock() {
+            *slot = Some(native_result.map_err(|error| format!("WebView2 MoveFocus failed (HRESULT {})", error.code().0)));
+        }
+    }).map_err(|error| error.to_string())?;
+    let response = result.lock().map_err(|_| "native focus result unavailable")?.take();
+    response.ok_or_else(|| "native focus must run on the UI thread".to_string())?
+}
+
+#[cfg(not(windows))]
+fn focus_workspace<R: Runtime>(view: &tauri::Webview<R>) -> Result<(), String> {
+    view.set_focus().map_err(|error| error.to_string())
+}
+
 #[cfg(windows)]
 fn attach_popup_window_close_handler<R: Runtime>(
     popup: &tauri::WebviewWindow<R>,
@@ -559,8 +590,8 @@ fn open_view<R: Runtime>(
         // Restoring a hidden child WebView does not necessarily restore
         // Windows input focus. Clipboard and user-gesture downloads depend
         // on the active view receiving the actual pointer/keyboard action.
-        webview.set_focus().map_err(|e| e.to_string())?;
-        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=restored-focused", requested_label));
+        focus_workspace(&webview)?;
+        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=restored-focus-request-ok", requested_label));
         *state
             .active_account_id
             .lock()
@@ -684,8 +715,9 @@ fn open_view<R: Runtime>(
         let diagnostic_label = requested_label.clone();
         webview
             .with_webview(move |platform| {
-                if let Ok(native) = unsafe { platform.controller().CoreWebView2() } {
-                    let _ = crate::webview_diagnostics::attach(&native, &diagnostic_label);
+                if let Err(error) = crate::webview_diagnostics::attach(&platform.controller(), &platform.environment(), &diagnostic_label) {
+                    crate::webview_download_bridge::diag("InstrumentationAttachFailed", &format!("webview={} available=0", diagnostic_label));
+                    eprintln!("[flowpilot-diag] native instrumentation unavailable: {error}");
                 }
             })
             .map_err(|e| e.to_string())?;
@@ -702,8 +734,8 @@ fn open_view<R: Runtime>(
     // Match the cached-view path: creation alone does not explicitly transfer
     // native input focus to the newly displayed service child.
     if let Some(webview) = app.get_webview(&requested_label) {
-        webview.set_focus().map_err(|e| e.to_string())?;
-        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=created-focused", requested_label));
+        focus_workspace(&webview)?;
+        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=created-focus-request-ok", requested_label));
     }
     *state
         .active_account_id

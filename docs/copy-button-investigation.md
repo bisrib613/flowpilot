@@ -79,3 +79,63 @@ Local isolated checks cover success, rejected promise, synchronous throw,
 pending operation, unchanged receiver/arguments, unchanged edit commands and
 fixed-field payloads. Payload/error-message access traps verify those contents
 are not inspected. These checks do not validate WebView2 native clipboard.
+
+## Native backend audit and PR preview 1.5.19
+
+Inspected the actual locked dependency versions: Tauri 2.11.5,
+tauri-runtime-wry 2.11.4, Wry 0.55.1, webview2-com 0.38.2.
+Pinned upstream source (not the latest default branch):
+
+- https://github.com/tauri-apps/tauri/blob/tauri-runtime-wry-v2.11.4/crates/tauri-runtime-wry/src/lib.rs
+- https://github.com/tauri-apps/wry/blob/wry-v0.55.1/src/webview2/mod.rs
+- https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/webview/mod.rs
+
+Confirmed a native error-propagation defect: Tauri's SetFocus message handler
+logs a failed Wry focus operation but does not propagate the native HRESULT to
+the caller. The public dispatch result therefore cannot acknowledge MoveFocus
+success. Flowpilot workspace commands already execute on the UI thread, where
+Tauri handles this dispatch inline (not necessarily queued). Earlier
+`created-focused` / `restored-focused` records overstated what was confirmed.
+This defect is confirmed from source, but no supplied log proves MoveFocus
+failed on the affected Copy attempts.
+
+Foreground workspace focus now invokes the same WebView2 controller MoveFocus
+operation through with_webview, propagates its COM result to the command, and
+logs NativeFocusRequest result=ok or error with numeric HRESULT. No extra retry,
+focus stealing on Copy, clipboard-read grant, or page modification is added.
+Lifecycle records are named created-focus-request-ok / restored-focus-request-ok;
+even COM success is not presented as proof of final OS input focus.
+
+Diagnostic builds additionally register native controller GotFocus/LostFocus
+and CoreWebView2 ProcessFailed callbacks, and record the installed runtime's
+numeric version. At Copy-click/write event receipt, NativeInputState records:
+
+- Last controller event: 0 unknown, 1 got focus, 2 lost focus.
+- Whether this UI thread has an HWND with focus and whether it is within the
+  WebView container's descendant tree.
+- Whether the WebView container's root HWND is the foreground window.
+- Whether GetOpenClipboardWindow returns an associated window.
+
+All HWNDs are reduced to booleans. No titles, other-app identities, clipboard
+contents, process IDs, credentials or URLs are recorded by these additions.
+GetOpenClipboardWindow can return null when a caller opened the clipboard with
+no associated window; a false flag is NOT proof the clipboard is unlocked.
+Samples occur on native message receipt and may follow the original DOM event.
+The callbacks retain no controller/CoreWebView2 COM object, avoiding an
+event-handler reference cycle. Partial diagnostic attachment errors are visible.
+
+Wry 0.55.1's clipboard option grants CLIPBOARD_READ, not a clipboard-write fix.
+Its constructor calls MoveFocus only when focused=true; Flowpilot background
+preloads use focused(false). Child views do not attach the single-view parent
+focus subclass. These observations do not establish whether an installed
+WebView2 runtime has an intermittent per-controller defect.
+
+Native focus behavior follows the controller API contract:
+https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2controller
+Clipboard-open-window caveat:
+https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getopenclipboardwindow
+
+The Copy bug remains open. The Linux environment cannot exercise the user's
+Windows runtime/profile. Windows CI can verify compilation and packaging, not
+native clipboard recovery. Keep testing both Copy locations after switching
+and preloading; do not infer recovery from diagnostics or a successful build.
