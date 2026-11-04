@@ -125,6 +125,19 @@ aside .side-bottom > .owner-label { margin: 0; color: var(--text); font-size: 14
 .dialog > input:focus { border-color: var(--accent); box-shadow: none; }
 .dialog .session-note { font-size: 12px; line-height: 16px; margin: 8px 0 12px; }
 .dialog .dialog-error { color: var(--danger); }
+/* Bulk selection is part of the light shell. Never inherit the old dark
+   theme's near-white labels, dark hover fill or green checkbox accent. */
+.bulk-share-source-list { max-height: min(44vh, 318px); background: var(--raised); border-color: var(--control); }
+.bulk-share-source { min-height: 44px; color: var(--text); }
+.bulk-share-source span { color: inherit; }
+.bulk-share-source:hover { background: var(--selected); }
+.bulk-share-source:has(input:checked) { background: var(--selected); font-weight: 500; }
+.bulk-share-source:has(input:checked):hover { background: var(--tab-hover); }
+.bulk-share-source:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
+.bulk-share-source input { accent-color: var(--accent); }
+.bulk-share-source input:focus-visible { outline: none; }
+.bulk-share-actions span { color: var(--muted); }
+.bulk-share-dialog .primary:disabled { opacity: 1; background: var(--rule); color: var(--muted); cursor: not-allowed; }
 .app > .content.flow-content, .app.full > .content.flow-content { padding: 0; overflow: hidden; }
 .flow-shell, .app.full .flow-shell { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--canvas); color: var(--text); }
 .flow-bar { height: 48px; min-height: 48px; flex: 0 0 48px; padding: 0 24px; gap: 12px; background: var(--canvas); border: 0; }

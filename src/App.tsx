@@ -979,7 +979,7 @@ export default function App() {
           <div className="overlay">
             <div className="dialog bulk-share-dialog" role="dialog" aria-modal="true" aria-labelledby="bulk-share-title">
               <h2 id="bulk-share-title">Bulk share to {SERVICES[activeService].name}</h2>
-              <p>Select existing Google Flow profiles. Each source creates one linked
+              <p>Select existing Google Flow profiles. Each source creates one linked{" "}
                 {SERVICES[activeService].shortName} profile without copying or deleting login data.</p>
               <div className="bulk-share-actions">
                 <button className="secondary" type="button" onClick={() => setBulkShareSelected(shareableSources.map((a) => a.id))}>Select all</button>
