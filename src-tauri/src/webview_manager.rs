@@ -15,7 +15,6 @@ use webview2_com::{
         COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
         COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS,
         COREWEBVIEW2_PERMISSION_STATE_ALLOW,
-        COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
     },
 };
 #[cfg(windows)]
@@ -309,36 +308,6 @@ fn flow_builder<R: Runtime>(label: String, url: WebviewUrl, profile: PathBuf, br
         
 }
 
-// All workspace operations run on the UI thread via run_on_ui_thread. Tauri's
-// SetFocus dispatcher logs and discards MoveFocus failures, so its Ok result is
-// not a native focus acknowledgement. Propagate the actual COM result instead.
-#[cfg(windows)]
-fn focus_workspace<R: Runtime>(view: &tauri::Webview<R>) -> Result<(), String> {
-    let result = std::sync::Arc::new(Mutex::new(None));
-    let callback_result = result.clone();
-    let label = view.label().to_string();
-    view.with_webview(move |platform| {
-        let native_result = unsafe {
-            platform.controller().MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
-        };
-        let status = match &native_result {
-            Ok(()) => "ok".to_string(),
-            Err(error) => format!("error hr={}", error.code().0),
-        };
-        crate::webview_download_bridge::diag("NativeFocusRequest", &format!("webview={} result={}", label, status));
-        if let Ok(mut slot) = callback_result.lock() {
-            *slot = Some(native_result.map_err(|error| format!("WebView2 MoveFocus failed (HRESULT {})", error.code().0)));
-        }
-    }).map_err(|error| error.to_string())?;
-    let response = result.lock().map_err(|_| "native focus result unavailable")?.take();
-    response.ok_or_else(|| "native focus must run on the UI thread".to_string())?
-}
-
-#[cfg(not(windows))]
-fn focus_workspace<R: Runtime>(view: &tauri::Webview<R>) -> Result<(), String> {
-    view.set_focus().map_err(|error| error.to_string())
-}
-
 #[cfg(windows)]
 fn attach_popup_window_close_handler<R: Runtime>(
     popup: &tauri::WebviewWindow<R>,
@@ -590,8 +559,8 @@ fn open_view<R: Runtime>(
         // Restoring a hidden child WebView does not necessarily restore
         // Windows input focus. Clipboard and user-gesture downloads depend
         // on the active view receiving the actual pointer/keyboard action.
-        focus_workspace(&webview)?;
-        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=restored-focus-request-ok", requested_label));
+        webview.set_focus().map_err(|error| error.to_string())?;
+        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=restored-focus-requested", requested_label));
         *state
             .active_account_id
             .lock()
@@ -734,8 +703,8 @@ fn open_view<R: Runtime>(
     // Match the cached-view path: creation alone does not explicitly transfer
     // native input focus to the newly displayed service child.
     if let Some(webview) = app.get_webview(&requested_label) {
-        focus_workspace(&webview)?;
-        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=created-focus-request-ok", requested_label));
+        webview.set_focus().map_err(|error| error.to_string())?;
+        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=created-focus-requested", requested_label));
     }
     *state
         .active_account_id
@@ -814,11 +783,43 @@ pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: Strin
     Ok(port)
 }
 
+// A background job may only clean up the exact view revision it borrowed.
+// Foreground open, reuse, and replacement all call touch_account, invalidating
+// the old lease without another per-profile ownership map.
+pub struct BackgroundView {
+    key: String,
+    revision: u64,
+    created: bool,
+}
+
+fn background_view(state: &WebviewManager, key: String, created: bool) -> Result<BackgroundView, String> {
+    let revision = *state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
+        .get(&key).ok_or("background WebView is no longer open")?;
+    Ok(BackgroundView { key, revision, created })
+}
+
+fn background_view_is_current(state: &WebviewManager, view: &BackgroundView) -> Result<bool, String> {
+    Ok(state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
+        .get(&view.key).copied() == Some(view.revision))
+}
+
+fn finish_background_view<R: Runtime>(app: &AppHandle<R>, view: BackgroundView) -> Result<(), String> {
+    let state = app.state::<WebviewManager>();
+    let _operation = state.operation.lock().map_err(|_| "webview state unavailable")?;
+    if !background_view_is_current(&state, &view)? { return Ok(()); }
+    if view.created { return destroy_view(app, &view.key); }
+    let prefix = format!("{}-popup-", webview_label(&view.key));
+    for (label, popup) in app.webview_windows() {
+        if label.starts_with(&prefix) { popup.close().map_err(|error| error.to_string())?; }
+    }
+    Ok(())
+}
+
 // Bulk sharing only creates service WebViews that reference existing Flow
 // directories. Never delete or clear a source profile during the batch.
 pub fn begin_bulk_shared_login<R: Runtime>(
     app: &AppHandle<R>, account_id: String, service: String,
-) -> Result<bool, String> {
+) -> Result<BackgroundView, String> {
     if service == "flow" { return Err("Bulk shared login needs a destination service".into()); }
     let key = profile_key(&service, &account_id)?;
     let accounts = crate::account_store::load_accounts(app.clone())?
@@ -839,7 +840,7 @@ pub fn begin_bulk_shared_login<R: Runtime>(
     }
     let created = app.get_webview(&webview_label(&key)).is_none();
     open_view(app, account_id, service, 0.0, 0.0, 980.0, 720.0, true)?;
-    Ok(created)
+    background_view(&app.state::<WebviewManager>(), key, created)
 }
 
 // Only evaluate our local, fixed scripts on the matching service or Google
@@ -895,38 +896,17 @@ pub fn evaluate_bulk_shared_login<R: Runtime>(
 }
 
 pub fn finish_bulk_shared_login<R: Runtime>(
-    app: &AppHandle<R>, account_id: String, service: String, created: bool,
-    preserve_attention_view: bool,
+    app: &AppHandle<R>, view: BackgroundView, preserve_attention_view: bool,
 ) -> Result<(), String> {
-    let key = profile_key(&service, &account_id)?;
-    let state = app.state::<WebviewManager>();
-    let _lock = state.operation.lock().map_err(|_| "webview state unavailable")?;
-    let label = webview_label(&key);
-    // Keep pending consent, CAPTCHA and incomplete onboarding available.
-    // Closing the opener here would discard the user's current login stage.
-    // No credential/cookie data is touched.
     if preserve_attention_view { return Ok(()); }
-    // Any lingering batch OAuth popup is specific to this destination account.
-    for (popup_label, popup) in app.webview_windows() {
-        if popup_label.starts_with(&format!("{label}-popup-")) {
-            popup.close().map_err(|error| error.to_string())?;
-        }
-    }
-    if created {
-        if let Some(view) = app.get_webview(&label) {
-            view.close().map_err(|error| error.to_string())?;
-        }
-        state.cached_accounts.lock().map_err(|_| "webview state unavailable")?.remove(&key);
-        state.automation_ports.lock().map_err(|_| "webview state unavailable")?.remove(&key);
-    }
-    Ok(())
+    finish_background_view(app, view)
 }
 
 const FLOW_CHECK_URL: &str = "https://flow.google.com/";
 
 // A manual re-login scan opens at most one temporary profile at a time.
 // Existing cached WebViews are reused without changing the active account.
-pub fn begin_flow_profile_check<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<Option<bool>, String> {
+pub fn begin_flow_profile_check<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<Option<BackgroundView>, String> {
     let key = profile_key("flow", &account_id)?;
     let accounts = crate::account_store::load_accounts(app.clone())?
         .ok_or_else(|| "Account storage unavailable".to_string())?;
@@ -945,7 +925,7 @@ pub fn begin_flow_profile_check<R: Runtime>(app: &AppHandle<R>, account_id: Stri
     let webview = app.get_webview(&label).ok_or("Flow WebView was not created")?;
     webview.navigate(FLOW_CHECK_URL.parse().map_err(|_| "Invalid Flow check URL")?)
         .map_err(|error| error.to_string())?;
-    Ok(Some(created))
+    background_view(&app.state::<WebviewManager>(), key, created).map(Some)
 }
 
 pub fn poll_flow_profile_check<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<String, String> {
@@ -966,26 +946,9 @@ pub fn click_flow_relogin_entry<R: Runtime>(app: &AppHandle<R>, account_id: Stri
     view.eval(include_str!("flow_landing_relogin.js")).map_err(|error| error.to_string())
 }
 
-pub fn finish_flow_profile_check<R: Runtime>(app: &AppHandle<R>, account_id: String, created: bool) -> Result<(), String> {
-    if !created { return Ok(()); }
-    let state = app.state::<WebviewManager>();
-    let key = profile_key("flow", &account_id)?;
-    let _lock = state.operation.lock().map_err(|_| "webview state unavailable")?;
-    let label = webview_label(&key);
-    // Close temporary OAuth popups too. Do not leave CAPTCHA/verification
-    // windows open when scanning the next profile.
-    let popup_prefix = format!("{label}-popup-");
-    for (popup_label, popup) in app.webview_windows() {
-        if popup_label.starts_with(&popup_prefix) {
-            popup.close().map_err(|error| error.to_string())?;
-        }
-    }
-    if let Some(view) = app.get_webview(&label) {
-        view.close().map_err(|error| error.to_string())?;
-    }
-    state.cached_accounts.lock().map_err(|_| "webview state unavailable")?.remove(&key);
-    state.automation_ports.lock().map_err(|_| "webview state unavailable")?.remove(&key);
-    Ok(())
+pub fn finish_flow_profile_check<R: Runtime>(app: &AppHandle<R>, view: BackgroundView) -> Result<(), String> {
+    if !view.created { return Ok(()); }
+    finish_background_view(app, view)
 }
 
 // These operations run on the UI thread. Epochs reject stale queued preload work.
@@ -1244,6 +1207,27 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
 #[cfg(test)]
 mod preload_tests {
     use super::{cancel_preloads, parse_bookmark_url, WebviewManager};
+
+    #[test]
+    fn background_cleanup_lease_survives_only_until_the_view_is_reused() {
+        use super::{background_view, background_view_is_current, touch_account};
+        let state = WebviewManager::default();
+        touch_account(&state, "chatgpt-a").unwrap();
+        let batch = background_view(&state, "chatgpt-a".into(), true).unwrap();
+        assert!(background_view_is_current(&state, &batch).unwrap());
+        // Opening the batch-created view transfers it to the user. Switching
+        // away again must not give the old background job ownership back.
+        touch_account(&state, "chatgpt-a").unwrap();
+        touch_account(&state, "claude-b").unwrap();
+        assert!(!background_view_is_current(&state, &batch).unwrap());
+        let borrowed = background_view(&state, "chatgpt-a".into(), false).unwrap();
+        state.cached_accounts.lock().unwrap().remove("chatgpt-a");
+        assert!(!background_view_is_current(&state, &borrowed).unwrap());
+        // A replacement with the same account ID is a different revision.
+        touch_account(&state, "chatgpt-a").unwrap();
+        assert!(!background_view_is_current(&state, &batch).unwrap());
+        assert!(!background_view_is_current(&state, &borrowed).unwrap());
+    }
 
     #[test]
     fn bookmark_urls_are_limited_to_the_active_service_domain() {

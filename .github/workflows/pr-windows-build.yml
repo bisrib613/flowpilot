@@ -27,10 +27,10 @@ jobs:
           # Unit tests, TypeScript and Vite do not require the heavy Cypress runtime.
           CYPRESS_INSTALL_BINARY: '0'
         run: npm ci
-      - name: Set PR-only installer version (interaction diagnostic preview)
+      - name: Set PR-only installer version (lifecycle fix)
         shell: pwsh
         run: |
-          $version = "1.5.19"
+          $version = "1.5.20"
           npm version $version --no-git-tag-version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -47,8 +47,7 @@ jobs:
       - name: Compile frontend
         run: npx tsc -b && npx vite build
       - name: Build Windows NSIS installer
-        # Temporary PR preview: capture click delivery/focus without clipboard contents.
-        run: npm run tauri -- build --features diag --bundles nsis --config src-tauri/tauri.pr-test.conf.json
+        run: npm run tauri -- build --bundles nsis --config src-tauri/tauri.pr-test.conf.json
       - name: Upload installer for testing (not a release)
         uses: actions/upload-artifact@v4
         with:

@@ -186,7 +186,7 @@ async fn check_flow_profile(app: tauri::AppHandle, account_id: String) -> Result
     }
     let start_app = app.clone();
     let start_id = account_id.clone();
-    let Some(created) = run_on_ui_thread(&app, move || {
+    let Some(workspace) = run_on_ui_thread(&app, move || {
         webview_manager::begin_flow_profile_check(&start_app, start_id)
     }).await? else {
         return Ok("no_previous_session");
@@ -232,9 +232,8 @@ async fn check_flow_profile(app: tauri::AppHandle, account_id: String) -> Result
     // A temporary check WebView is never retained across profiles.
     // A user-opened view remains intact.
     let finish_app = app.clone();
-    let finish_id = account_id;
     let cleanup = run_on_ui_thread(&app, move || {
-        webview_manager::finish_flow_profile_check(&finish_app, finish_id, created)
+        webview_manager::finish_flow_profile_check(&finish_app, workspace)
     }).await;
     match (result, cleanup) {
         (Ok(status), Ok(())) => Ok(status),
@@ -268,7 +267,7 @@ async fn run_bulk_shared_login(
     let start_app = app.clone();
     let start_id = account_id.clone();
     let start_service = service.clone();
-    let created = run_on_ui_thread(&app, move || {
+    let workspace = run_on_ui_thread(&app, move || {
         webview_manager::begin_bulk_shared_login(&start_app, start_id, start_service)
     }).await?;
 
@@ -346,11 +345,9 @@ async fn run_bulk_shared_login(
     let keep_attention_view = matches!(&result, Ok("consent_required" | "verification_required" |
         "signup_required" | "onboarding_required" | "reauth_required" | "needs_attention" | "invalid_session" | "login_unconfirmed"));
     let finish_app = app.clone();
-    let finish_id = account_id;
-    let finish_service = service;
     let cleanup = run_on_ui_thread(&app, move || {
         webview_manager::finish_bulk_shared_login(
-            &finish_app, finish_id, finish_service, created,
+            &finish_app, workspace,
             keep_attention_view,
         )
     }).await;

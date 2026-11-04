@@ -1,5 +1,21 @@
 # Service Copy button investigation
 
+## Current status — PR preview 1.5.20
+
+The normal PR installer no longer enables `diag`. The clipboard prototype and
+promise wrappers introduced in 1.5.18 have been removed, including from the
+optional diagnostic script. Foreground focus again follows Tauri's existing
+set_focus path; the additional direct-COM focus result helper has been removed.
+MoveFocus was not established as a Copy or renderer-hang fix.
+
+This revision fixes independently identified lifecycle defects: shell controller
+commands execute in order, disposed effects skip queued work, Back has one hide
+owner, and background cleanup checks its view revision before closing anything.
+See `lifecycle-fix-20261104.md` for changes, regression checks and boundaries.
+Copy recovery and the reported ChatGPT streaming/rendering hang remain subject
+to verification on the affected Windows runtime. The historical previews and
+diagnostic experiments below are not descriptions of the default 1.5.20 build.
+
 Reported on Claude: Copy fails both in the hover toolbar and below the response in the same profile, while Edit works and other profiles can copy. Hover alone is not the cause. Screenshots cannot establish whether pointer delivery, page handling, or the browser clipboard operation fails.
 
 The PR preview 1.5.15 explicitly focuses newly created foreground child WebViews, matching the existing cached-view path. Background preloads still request no focus. This removes a lifecycle inconsistency; it is not proof of the reported bug's root cause or resolution.

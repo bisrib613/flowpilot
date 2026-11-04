@@ -6,6 +6,7 @@ import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
 import ProfileSwitcher from "./components/ProfileSwitcher"
+import { workspaceCommand, WorkspaceCommandCancelled } from "./services/workspace-commands"
 import { useDialogFocus } from "./components/useDialogFocus"
 import { neighborIndices, readPreloadSides, rememberWorkspace, forgetWorkspaces, resumableAccount, type WorkspaceMemory, type WorkspaceCloseScope } from "./services/workspace-policy"
 import { loadAccounts, saveAccounts } from "./services/account-store"
@@ -717,6 +718,7 @@ export default function App() {
         {!fullView && <Sidebar view="flow" setView={setView} accounts={accounts} activeService={activeService} onService={selectService} disabled={workspaceClosing} />}
         <main className="content flow-content">
           <FlowShell
+            key={`${serviceOf(active)}-${active.id}`}
             downloadNotice={downloadNotice}
             onDismissDownload={() => setDownloadNotice("")}
             account={active}
@@ -776,7 +778,6 @@ export default function App() {
               }))
             }}
             onBack={() => {
-              void invoke("close_google_flow", { accountId: active.id, service: serviceOf(active) })
               setFullView(false)
               setView("accounts")
             }}
@@ -1770,6 +1771,11 @@ function FlowShell({
   const [bookmarkMenu, setBookmarkMenu] = useState<{ id: string; left: number; top: number } | null>(null)
   const [closing, setClosing] = useState(false)
   const stopped = useRef(false)
+  const workspaceVersion = useRef(0)
+  const currentWorkspace = () => {
+    const version = workspaceVersion.current
+    return () => !stopped.current && workspaceVersion.current === version
+  }
   const currentIndex = accounts.findIndex((candidate) => candidate.id === account.id)
   const neighborIds = neighborIndices(accounts.length, currentIndex, preloadSides).map((index) => accounts[index].id)
   const neighborKey = neighborIds.join(",")
@@ -1785,11 +1791,13 @@ function FlowShell({
     setBookmarkMenu(null)
     clearBookmarkForm()
     let cancelled = false
+    workspaceVersion.current++
     stopped.current = false
+    const current = () => !cancelled && !stopped.current
     setOpenError("")
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
-    invoke<number>("prepare_workspace", {
+    workspaceCommand<number>("prepare_workspace", {
       neighbors: neighborIds,
       accountId: account.id,
       service: serviceId,
@@ -1797,7 +1805,7 @@ function FlowShell({
       y: rect.top,
       width: rect.width,
       height: rect.height,
-    })
+    }, current)
       .then(async (epoch) => {
         if (cancelled || stopped.current) return
         onOpened(account)
@@ -1807,14 +1815,16 @@ function FlowShell({
           await new Promise((resolve) => setTimeout(resolve, 150))
           if (cancelled || stopped.current) break
           try {
-            await invoke("preload_workspace", { accountId: id, service: serviceId, epoch, width: rect.width, height: rect.height })
+            await workspaceCommand("preload_workspace", { accountId: id, service: serviceId, epoch, width: rect.width, height: rect.height }, current)
           } catch (error) {
+            if (error instanceof WorkspaceCommandCancelled) break
             if (!cancelled && !stopped.current) setStatus("Workspace open. Some nearby accounts could not preload.")
             console.warn("Account preload failed", error)
           }
         }
       })
       .catch((error) => {
+        if (error instanceof WorkspaceCommandCancelled) return
         console.error(`${service.name} WebView failed`, error)
         if (!cancelled) {
           setStatus(`Unable to open ${service.name}`)
@@ -1823,24 +1833,44 @@ function FlowShell({
       })
     return () => {
       cancelled = true
-      void invoke("close_google_flow", { accountId: account.id, service: serviceId })
+      stopped.current = true
+      workspaceVersion.current++
+      void workspaceCommand("close_google_flow", { accountId: account.id, service: serviceId })
+        .catch(error => console.error("Workspace hide failed", error))
     }
   }, [account.id, serviceId, preloadSides, neighborKey])
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
+    let disposed = false
+    let frame = 0
+    const current = () => !disposed && !stopped.current
     const syncBounds = () => {
-      const rect = container.getBoundingClientRect()
-      void invoke("resize_google_flow", { accountId: account.id, service: serviceId, x: rect.left, y: rect.top, width: rect.width, height: rect.height })
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        if (!current()) return
+        const rect = container.getBoundingClientRect()
+        if (rect.width <= 0 || rect.height <= 0) return
+        void workspaceCommand("resize_google_flow", { accountId: account.id, service: serviceId, x: rect.left, y: rect.top, width: rect.width, height: rect.height }, current)
+          .catch(error => {
+            if (current() && !(error instanceof WorkspaceCommandCancelled)) {
+              console.error("Workspace resize failed", error)
+              setStatus("Workspace size could not update. Return to Accounts and reopen the profile.")
+            }
+          })
+      })
     }
-    const onReady = () => syncBounds()
-    container.addEventListener("flowpilot-webview-ready", onReady)
+    container.addEventListener("flowpilot-webview-ready", syncBounds)
+    window.addEventListener("resize", syncBounds)
     const observer = new ResizeObserver(syncBounds)
     observer.observe(container)
     syncBounds()
     return () => {
+      disposed = true
+      cancelAnimationFrame(frame)
       observer.disconnect()
-      container.removeEventListener("flowpilot-webview-ready", onReady)
+      window.removeEventListener("resize", syncBounds)
+      container.removeEventListener("flowpilot-webview-ready", syncBounds)
     }
   }, [fullView, account.id, serviceId])
   useEffect(() => {
@@ -1855,16 +1885,19 @@ function FlowShell({
   }, [bookmarkMenu])
   const closeWorkspaces = async (scope: WorkspaceCloseScope) => {
     if (stopped.current) return
+    const version = workspaceVersion.current
     stopped.current = true
     setClosing(true)
     onClosingChange(true)
     try {
-      await invoke("close_workspaces", {
+      await workspaceCommand("close_workspaces", {
         service: scope === "all" ? null : serviceId,
         accountId: scope === "profile" ? account.id : null,
-      })
+      }, () => workspaceVersion.current === version)
+      if (workspaceVersion.current !== version) return
       onClosed(scope)
     } catch (error) {
+      if (workspaceVersion.current !== version) return
       setStatus(`Unable to close workspaces: ${String(error)}`)
       stopped.current = false
       setClosing(false)
@@ -1873,7 +1906,8 @@ function FlowShell({
     }
   }
   const showWebview = async () => {
-    if (stopped.current) return
+    const current = currentWorkspace()
+    if (!current()) return
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
     setBookmarkManagerOpen(false)
@@ -1882,44 +1916,52 @@ function FlowShell({
     setStatus(`Loading ${service.name}...`)
     setOpenError("")
     try {
-      await invoke("open_google_flow", {
+      await workspaceCommand("open_google_flow", {
         accountId: account.id,
         service: serviceId,
         x: rect.left,
         y: rect.top,
         width: rect.width,
         height: rect.height,
-      })
+      }, current)
+      if (!current()) return
       setStatus(`${service.name} workspace`)
     } catch (error) {
+      if (!current() || error instanceof WorkspaceCommandCancelled) return
       console.error(`${service.name} WebView failed`, error)
       setStatus(`Unable to open ${service.name}`)
       setOpenError(String(error))
     }
   }
   const navigateBookmark = async (url: string, name: string) => {
-    if (!bookmarkService || stopped.current) return
+    const current = currentWorkspace()
+    if (!bookmarkService || !current()) return
     try {
       setBookmarkMenu(null)
       if (bookmarkManagerOpen) await showWebview()
-      if (stopped.current) return
+      if (!current()) return
       setStatus(`Opening ${name}...`)
-      await invoke("navigate_service_bookmark", { accountId: account.id, service: bookmarkService, url })
+      await workspaceCommand("navigate_service_bookmark", { accountId: account.id, service: bookmarkService, url }, current)
+      if (!current()) return
       setStatus(`Opened ${name}`)
     } catch (error) {
+      if (!current() || error instanceof WorkspaceCommandCancelled) return
       console.error(`${service.name} bookmark failed`, error)
       setStatus(`Unable to open ${name}. Please check the bookmark URL.`)
     }
   }
   const openBookmarkManager = async () => {
-    if (!bookmarkService || stopped.current) return
+    const current = currentWorkspace()
+    if (!bookmarkService || !current()) return
     try {
-      await invoke("close_google_flow", { accountId: account.id, service: serviceId })
+      await workspaceCommand("close_google_flow", { accountId: account.id, service: serviceId }, current)
+      if (!current()) return
       setBookmarkManagerOpen(true)
       setBookmarkMenu(null)
       clearBookmarkForm()
       setStatus(`Manage ${service.shortName} bookmarks`)
     } catch (error) {
+      if (!current() || error instanceof WorkspaceCommandCancelled) return
       console.error("Unable to open bookmark manager", error)
       setStatus("Unable to open bookmark manager. Please try again.")
     }
@@ -1933,11 +1975,13 @@ function FlowShell({
     clearBookmarkForm()
   }
   const editBookmark = async (bookmark: ServiceBookmark) => {
-    if (stopped.current) return
+    const current = currentWorkspace()
+    if (!current()) return
     try {
       if (!bookmarkManagerOpen) {
-        await invoke("close_google_flow", { accountId: account.id, service: serviceId })
+        await workspaceCommand("close_google_flow", { accountId: account.id, service: serviceId }, current)
       }
+      if (!current()) return
       setBookmarkManagerOpen(true)
       setBookmarkMenu(null)
       setEditingBookmarkId(bookmark.id)
@@ -1946,6 +1990,7 @@ function FlowShell({
       setBookmarkError("")
       setStatus(`Edit ${bookmark.name}`)
     } catch (error) {
+      if (!current() || error instanceof WorkspaceCommandCancelled) return
       console.error("Unable to edit bookmark", error)
       setStatus("Unable to open bookmark editor. Please try again.")
     }

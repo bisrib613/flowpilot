@@ -107,11 +107,11 @@ pub fn attach(controller: &ICoreWebView2Controller, environment: &ICoreWebView2E
                 // page can post arbitrary messages; never log its raw payload.
                 let fields: Vec<_> = message.split('|').collect();
                 if fields.len() == 9 && fields[0] == "flowpilot-interaction"
-                    && ["pointerdown", "pointerup", "click", "copy-event", "rejection", "focus", "blur", "visibility", "ready", "probe-installed", "probe-unavailable", "write-start", "write-ok", "write-error", "write-pending", "write-false"].contains(&fields[1])
-                    && ["copy", "other", "document", "NotAllowedError", "SecurityError", "TypeError", "AbortError", "writeText", "write", "execCommand"].contains(&fields[2])
+                    && ["pointerdown", "pointerup", "click", "copy-event", "rejection", "focus", "blur", "visibility", "ready"].contains(&fields[1])
+                    && ["copy", "other", "document", "NotAllowedError", "SecurityError", "TypeError", "AbortError"].contains(&fields[2])
                     && fields[3..].iter().all(|value| matches!(*value, "0" | "1")) {
                     log_event(&s, "ServiceInteraction", &format!("webview={} kind={} control={} focused={} visible={} activated={} prevented={} trusted={} hit={}", interaction_label, fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8]));
-                    if (fields[1] == "click" && fields[2] == "copy") || fields[1].starts_with("write-") {
+                    if fields[1] == "click" && fields[2] == "copy" {
                         native_input_snapshot(&s, &interaction_label, parent, native_focus.load(Ordering::Relaxed), fields[1]);
                     }
                 }
