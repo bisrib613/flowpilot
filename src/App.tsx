@@ -803,7 +803,7 @@ export default function App() {
               )}
               {view === "accounts" && activeService !== "flow" && (
                 <button className="secondary" disabled={!accountStorageReady || bulkShareRunning || shareableSources.length === 0}
-                  onClick={openBulkShare}>Bulk share</button>
+                  onClick={openBulkShare}>Bulk Add Profile</button>
               )}
               {view === "accounts" && <button className="primary" disabled={!accountStorageReady || flowScanRunning || bulkShareRunning} onClick={handleAddAccount}>
                 + Add account
@@ -978,7 +978,7 @@ export default function App() {
         {bulkShareOpen && activeService !== "flow" && (
           <div className="overlay">
             <div className="dialog bulk-share-dialog" role="dialog" aria-modal="true" aria-labelledby="bulk-share-title">
-              <h2 id="bulk-share-title">Bulk share to {SERVICES[activeService].name}</h2>
+              <h2 id="bulk-share-title">Bulk Add Profile · {SERVICES[activeService].name}</h2>
               <p>Select existing Google Flow profiles. Each source creates one linked{" "}
                 {SERVICES[activeService].shortName} profile without copying or deleting login data.</p>
               <div className="bulk-share-actions">
