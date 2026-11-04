@@ -4,6 +4,7 @@ use tauri::Emitter;
 mod account_store;
 mod google_relogin;
 mod name_generator;
+mod indonesian_names;
 mod webview_manager;
 mod native_downloads;
 mod download_settings;

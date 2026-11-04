@@ -1669,7 +1669,7 @@ function NameGeneratorSettings() {
       await invoke("name_generator_save_key", { apiKey })
       setEnabled(true)
       setApiKey("")
-      setMessage("API key saved. Indonesian names will be requested only during new ChatGPT signup.")
+      setMessage("API key saved. Signup adapters will use the shared name generator.")
     } catch {
       setMessage("Could not save API key. Check Windows Credential Manager and try again.")
     } finally { setBusy(false) }
@@ -1686,12 +1686,25 @@ function NameGeneratorSettings() {
       setMessage("Could not remove the saved API key.")
     } finally { setBusy(false) }
   }
+  const useLocalNames = async () => {
+    setBusy(true)
+    setMessage("")
+    try {
+      await invoke("name_generator_save_key", { apiKey: "__FLOWPILOT_LOCAL_NAMES__" })
+      setEnabled(true)
+      setApiKey("")
+      setMessage("Local Indonesian names enabled. No API connection is required.")
+    } catch {
+      setMessage("Could not save the name generator setting.")
+    } finally { setBusy(false) }
+  }
   return (
     <section className="preload-setting">
       <div>
         <h2>Indonesian signup names</h2>
-        <p>Use Behind the Name to generate a name for new ChatGPT accounts during shared-profile sign-in. Existing accounts keep their names. If the API is unavailable, use the Google name or linked profile name. The signup age defaults to 27 when empty.</p>
-        <p>Your API key is stored in Windows Credential Manager and sent only to Behind the Name to request names.</p>
+        <p>Generate Indonesian display names locally, or use Behind the Name with your own API key. If the API fails, the local generator is used. Existing accounts keep their names.</p>
+        <p>The generator is shared across services. ChatGPT signup is connected today; other services need their own signup adapter. ChatGPT age defaults to 27 when empty.</p>
+        <p>Optional API keys are stored in Windows Credential Manager and sent only to Behind the Name.</p>
         <p>Status: <strong>{enabled ? "Enabled" : "Disabled"}</strong></p>
       </div>
       <label htmlFor="behind-the-name-key">Behind the Name API key</label>
@@ -1700,6 +1713,7 @@ function NameGeneratorSettings() {
         onChange={(event) => setApiKey(event.target.value)}
         placeholder={enabled ? "Enter a new key to replace the saved one" : "Enter API key"} />
       <div className="dialog-actions">
+        <button className="secondary" disabled={busy} onClick={() => void useLocalNames()}>Use local names</button>
         <button className="primary" disabled={busy || !apiKey.trim()} onClick={() => void save()}>
           {enabled ? "Replace API key" : "Save and enable"}
         </button>
