@@ -30,6 +30,10 @@
     const name = event.reason?.name;
     send('rejection', ['NotAllowedError', 'SecurityError', 'TypeError', 'AbortError'].includes(name) ? name : 'other');
   });
+  // Observe legacy execCommand copy without reading ClipboardEvent data.
+  document.addEventListener('copy', event => {
+    queueMicrotask(() => send('copy-event', 'document', event.defaultPrevented, event.isTrusted));
+  }, { capture: true, passive: true });
   for (const type of ['focus', 'blur']) window.addEventListener(type, () => send(type, 'document'));
   document.addEventListener('visibilitychange', () => send('visibility', 'document'));
   send('ready', 'document');

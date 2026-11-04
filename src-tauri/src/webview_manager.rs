@@ -251,6 +251,7 @@ fn attach_webview_permissions<R: Runtime>(
     // directly to allow repeated downloads only from the requesting trusted
     // service origin. Clipboard copy uses user-gesture writeText; never
     // silently grant clipboard READ access for an unrelated copy action.
+    let diagnostic_label = webview.label().to_string();
     webview.with_webview(move |platform| {
         let result = (|| -> Result<(), String> {
             let native = unsafe { platform.controller().CoreWebView2() }
@@ -262,6 +263,7 @@ fn attach_webview_permissions<R: Runtime>(
                         let Some(args) = args else { return Ok(()); };
                         let mut kind = Default::default();
                         args.PermissionKind(&mut kind)?;
+                        crate::webview_download_bridge::diag("PermissionRequested", &format!("webview={} kind={}", diagnostic_label, kind.0));
                         if kind != COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS {
                             return Ok(());
                         }
@@ -530,6 +532,7 @@ fn open_view<R: Runtime>(
         .ok_or_else(|| "main window not found".to_string())?;
 
     let requested_label = webview_label(&key);
+    crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=open-request background={}", requested_label, background));
     let active_account = state
         .active_account_id
         .lock()
@@ -557,6 +560,7 @@ fn open_view<R: Runtime>(
         // Windows input focus. Clipboard and user-gesture downloads depend
         // on the active view receiving the actual pointer/keyboard action.
         webview.set_focus().map_err(|e| e.to_string())?;
+        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=restored-focused", requested_label));
         *state
             .active_account_id
             .lock()
@@ -690,6 +694,7 @@ fn open_view<R: Runtime>(
     if background {
         if let Some(webview) = app.get_webview(&requested_label) {
             webview.hide().map_err(|e| e.to_string())?;
+            crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=preloaded-hidden", requested_label));
         }
         touch_account(&state, &key)?;
         return Ok(());
@@ -698,6 +703,7 @@ fn open_view<R: Runtime>(
     // native input focus to the newly displayed service child.
     if let Some(webview) = app.get_webview(&requested_label) {
         webview.set_focus().map_err(|e| e.to_string())?;
+        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=created-focused", requested_label));
     }
     *state
         .active_account_id
@@ -959,6 +965,7 @@ fn cancel_preloads(state: &WebviewManager) -> Result<u64, String> {
 }
 
 fn destroy_view<R: Runtime>(app: &AppHandle<R>, key: &str) -> Result<(), String> {
+    crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=destroy", webview_label(key)));
     let state = app.state::<WebviewManager>();
     let label = webview_label(key);
     for (popup_label, popup) in app.webview_windows() {
@@ -1096,6 +1103,7 @@ pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>, service
             cancel_preloads(&state)?;
             if let Some(webview) = app.get_webview(&webview_label(&active_id)) {
                 webview.hide().map_err(|e| e.to_string())?;
+                crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=hidden", webview_label(&active_id)));
             }
             *state.visible.lock().map_err(|_| "webview state unavailable")? = false;
         }

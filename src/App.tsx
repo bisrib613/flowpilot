@@ -5,7 +5,9 @@ import { invoke } from "@tauri-apps/api/core"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
-import { neighborIndices, shortcutBounds, readPreloadSides, rememberWorkspace, forgetWorkspaces, resumableAccount, type WorkspaceMemory, type WorkspaceCloseScope } from "./services/workspace-policy"
+import ProfileSwitcher from "./components/ProfileSwitcher"
+import { useDialogFocus } from "./components/useDialogFocus"
+import { neighborIndices, readPreloadSides, rememberWorkspace, forgetWorkspaces, resumableAccount, type WorkspaceMemory, type WorkspaceCloseScope } from "./services/workspace-policy"
 import { loadAccounts, saveAccounts } from "./services/account-store"
 import { generateIndonesianName } from "./services/signup-name"
 import { availableSharedSources, defaultSortDirection, PROFILE_SORT_OPTIONS, readProfileSort, sortProfileCards, type ProfileSort, type ProfileSortKey } from "./services/profile-features"
@@ -142,6 +144,9 @@ export default function App() {
   const [workspaceClosing, setWorkspaceClosing] = useState(false)
   const [fullView, setFullView] = useState(false)
   const [dialog, setDialog] = useState<Account | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState("")
+  const deleteLock = useRef(false)
   const [menu, setMenu] = useState<string | null>(null)
   const [cacheNotice, setCacheNotice] = useState("")
   const [flowScanRunning, setFlowScanRunning] = useState(false)
@@ -153,6 +158,7 @@ export default function App() {
   const [bulkShareOpen, setBulkShareOpen] = useState(false)
   const [bulkShareSelected, setBulkShareSelected] = useState<string[]>([])
   const [bulkShareRunning, setBulkShareRunning] = useState(false)
+  const [bulkShareService, setBulkShareService] = useState<ServiceId | null>(null)
   const [bulkShareProgress, setBulkShareProgress] = useState("")
   const [bulkShareResults, setBulkShareResults] = useState<Record<string, string>>({})
   const bulkShareStop = useRef(false)
@@ -196,11 +202,15 @@ export default function App() {
     setMenu(null)
   }
   const handleDelete = (a: Account) => {
+    setDeleteError("")
     setDialog(a)
     setMenu(null)
   }
   const confirmDelete = async () => {
-    if (!dialog) return
+    if (!dialog || deleteLock.current) return
+    deleteLock.current = true
+    setDeleting(true)
+    setDeleteError("")
     const removing = dialog
     try {
       const profileCleaned = await invoke<boolean>("remove_google_flow_account", {
@@ -222,6 +232,10 @@ export default function App() {
       setDialog(null)
     } catch (error) {
       console.error("Unable to remove account", error)
+      setDeleteError("Could not delete this profile. Close its sign-in windows and try again.")
+    } finally {
+      deleteLock.current = false
+      setDeleting(false)
     }
   }
   const handleClearAccountCache = async (a: Account) => {
@@ -327,6 +341,7 @@ export default function App() {
     const sources = accounts.filter((account) => serviceOf(account) === "flow" &&
       eligible.has(account.id) && bulkShareSelected.includes(account.id))
     const service = activeService
+    setBulkShareService(service)
     const target = accounts.filter((account) => serviceOf(account) === service)
     const linked = new Set(target.map((account) => account.flowSessionId).filter(Boolean))
     const startOrder = Math.max(-1, ...target.map((account) => account.order)) + 1
@@ -671,7 +686,7 @@ export default function App() {
     const dismiss = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return
       setMenu(null)
-      setDialog(null)
+      if (!deleteLock.current) setDialog(null)
       setAddAccountOpen(false)
       setBulkShareOpen(false)
     }
@@ -686,28 +701,7 @@ export default function App() {
     document.addEventListener("click", dismiss)
     return () => document.removeEventListener("click", dismiss)
   }, [menu])
-  useEffect(() => {
-    if (!dialog && !addAccountOpen && !bulkShareOpen) return
-    const previousFocus = document.activeElement as HTMLElement | null
-    const trapFocus = (event: KeyboardEvent) => {
-      if (event.key !== "Tab") return
-      const controls = document.querySelectorAll<HTMLElement>('.dialog button:not(:disabled), .dialog input:not(:disabled), .dialog select:not(:disabled)')
-      const first = controls[0]
-      const last = controls[controls.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last?.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first?.focus()
-      }
-    }
-    document.addEventListener("keydown", trapFocus)
-    return () => {
-      document.removeEventListener("keydown", trapFocus)
-      if (previousFocus?.isConnected) previousFocus.focus()
-    }
-  }, [dialog, addAccountOpen, bulkShareOpen])
+  useDialogFocus(Boolean(dialog || addAccountOpen || bulkShareOpen))
   if (view === "flow" && active)
     return (
       <div className={`app ${fullView ? "full" : ""}`}>
@@ -792,7 +786,7 @@ export default function App() {
       <main className={`content ${view === "accounts" || view === "favorites" ? "accounts-page" : "settings-page"}`}>
         <DownloadNotice message={downloadNotice} onDismiss={() => setDownloadNotice("")} />
         <header>
-          <h1>{view === "settings" ? "Settings" : view === "favorites" ? "Favorite Accounts" : SERVICES[activeService].name}</h1>
+          <h1 className={view === "accounts" ? "sr-only" : undefined}>{view === "settings" ? "Settings" : view === "favorites" ? "Favorite Accounts" : SERVICES[activeService].name}</h1>
           {(view === "accounts" || view === "favorites") && (
             <div className="header-actions">
               {view === "accounts" && activeService === "flow" && (
@@ -819,6 +813,15 @@ export default function App() {
           <div className="profiles-heading">
             <div className="profiles-title"><h2>Profiles</h2><span>{view === "favorites" ? favoriteCount : serviceAccounts.length}</span></div>
             <div className="profile-list-controls">
+              <div className="search">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg>
+                <input
+                  aria-label="Search accounts"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search accounts..."
+                />
+              </div>
               {view === "accounts" && (
                 <div className="profile-sort-controls">
                   <label className="profile-sort-wrap">
@@ -839,15 +842,7 @@ export default function App() {
                   )}
                 </div>
               )}
-              <div className="search">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg>
-                <input
-                  aria-label="Search accounts"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search accounts..."
-                />
-              </div>
+
             </div>
           </div>
         )}
@@ -858,7 +853,7 @@ export default function App() {
             <button type="button" aria-label="Dismiss cache status" onClick={() => setCacheNotice("")}>×</button>
           </div>
         )}
-        {view === "accounts" && activeService !== "flow" && (bulkShareRunning || Object.keys(bulkShareResults).length > 0) && (
+        {view === "accounts" && activeService === bulkShareService && (bulkShareRunning || Object.keys(bulkShareResults).length > 0) && (
           <section className="cache-status bulk-login-report" role="status" aria-label="Bulk shared Google sign-in results">
             <div>
               <strong>Bulk Google sign-in {bulkShareRunning ? `· ${bulkShareProgress}` : "· completed"}</strong>
@@ -961,15 +956,17 @@ export default function App() {
                 <p className="session-note">This session is also used by {accounts.filter((a) => a.id !== dialog.id && (a.flowSessionId || (serviceOf(a) === "flow" ? a.id : null)) === (dialog.flowSessionId || (serviceOf(dialog) === "flow" ? dialog.id : ""))).map((a) => `${SERVICES[serviceOf(a)].shortName}: ${a.name}`).join(", ")}. Their browser data and saved logins will be kept.</p>
               )}
               {dialog.flowSessionId && <p className="session-note">The borrowed Flow session will be kept, including this platform's login stored in that shared session.</p>}
+              {deleteError && <p className="dialog-error" role="alert">{deleteError}</p>}
               <div className="dialog-actions">
-                <button autoFocus className="secondary" onClick={() => setDialog(null)}>
+                <button autoFocus className="secondary" disabled={deleting} onClick={() => setDialog(null)}>
                   Cancel
                 </button>
                 <button
                   className="danger"
+                  disabled={deleting}
                   onClick={() => void confirmDelete()}
                 >
-                  Delete account
+                  {deleting ? "Deleting…" : "Delete account"}
                 </button>
               </div>
             </div>
@@ -1038,6 +1035,8 @@ export default function App() {
               <label className="field-label" htmlFor="account-name">Profile name</label>
               <input
                 id="account-name"
+                aria-invalid={Boolean(addAccountError)}
+                aria-describedby={addAccountError ? "account-error" : undefined}
                 autoFocus
                 value={newAccountName}
                 onChange={(event) => {
@@ -1060,7 +1059,7 @@ export default function App() {
                    <p className="session-note">For matching an already-recognized account when Google shows multiple identities. If blank, auto re-login chooses only when exactly one is shown.</p>
                  </>
                )}
-               {addAccountError && <p className="dialog-error">{addAccountError}</p>}
+               {addAccountError && <p id="account-error" className="dialog-error" role="alert">{addAccountError}</p>}
               <div className="dialog-actions">
                 <button className="secondary" onClick={() => setAddAccountOpen(false)}>
                   Cancel
@@ -1074,45 +1073,6 @@ export default function App() {
         )}
       </main>
     </div>
-  )
-}
-function ProfileSwitcher({ accounts, activeId, disabled: closing = false, onSelect }: {
-  accounts: Account[]
-  activeId?: string
-  disabled?: boolean
-  onSelect: (account: Account) => void
-}) {
-  const shortcutListRef = useRef<HTMLDivElement>(null)
-  const revealShortcuts = useRef<"before" | "after" | null>(null)
-  const [moreBefore, setMoreBefore] = useState(0)
-  const [moreAfter, setMoreAfter] = useState(2)
-  useEffect(() => {
-    const list = shortcutListRef.current
-    if (!list) return
-    if (revealShortcuts.current) {
-      list.scrollLeft = revealShortcuts.current === "before" ? 0 : list.scrollWidth
-      revealShortcuts.current = null
-    } else {
-      const selected = list.querySelector<HTMLElement>("[aria-current]")
-      if (selected) {
-        const left = selected.offsetLeft - list.offsetLeft
-        if (left < list.scrollLeft) list.scrollLeft = left
-        else if (left + selected.offsetWidth > list.scrollLeft + list.clientWidth) list.scrollLeft = left + selected.offsetWidth - list.clientWidth
-      }
-    }
-  }, [activeId, accounts, moreBefore, moreAfter])
-  const currentIndex = Math.max(0, accounts.findIndex((candidate) => candidate.id === activeId))
-  const [shortcutStart, shortcutEnd] = shortcutBounds(accounts.length, currentIndex, moreBefore, moreAfter)
-  return (
-      <nav className="account-shortcuts" aria-label="Account shortcuts">
-        <button className="shortcut-more" disabled={shortcutStart === 0 || closing} onClick={() => { revealShortcuts.current = "before"; setMoreBefore((value) => value + 5) }} aria-label="Earlier profiles" title="Earlier profiles"><img src="/icons/next.svg" width="16" height="16" alt="" className="previous-arrow" /></button>
-        <div className="shortcut-list" ref={shortcutListRef}>
-          {accounts.slice(shortcutStart, shortcutEnd).map((candidate) => <button key={candidate.id}
-            className={candidate.id === activeId ? "active" : ""} aria-current={candidate.id === activeId ? "true" : undefined}
-            disabled={closing} title={candidate.name} onClick={() => onSelect(candidate)}><span>{candidate.name}</span></button>)}
-        </div>
-        <button className="shortcut-more" disabled={shortcutEnd === accounts.length || closing} onClick={() => { revealShortcuts.current = "after"; setMoreAfter((value) => value + 5) }} aria-label="Later profiles" title="Later profiles"><img src="/icons/next.svg" width="16" height="16" alt="" /></button>
-      </nav>
   )
 }
 function Brand() {
@@ -1310,28 +1270,21 @@ function InfoPage() {
           <span className="badge">LOCAL ACCOUNT DATA</span>
         </div>
         <div className="privacy-row">
-          <span>🔒</span>
+
           <div>
             <h3>Google Login Stays in Google Flow</h3>
-            <p>
-              Your Google account login is handled directly inside Google Flow.
-              Flowpilot does not ask you to enter your Google password into
-              Flowpilot.
-            </p>
+            <p>Sign in directly with Google inside the service. Optional Flow re-login uses the shared password you enable in Settings.</p>
           </div>
         </div>
         <div className="privacy-row">
-          <span>🔑</span>
+
           <div>
-            <h3>No Password Storage</h3>
-            <p>
-              Flowpilot does not store your Google password or ask you to
-              provide it to the application.
-            </p>
+            <h3>Optional re-login credentials</h3>
+            <p>If you enable auto re-login, its shared password is stored in Windows Credential Manager, separately from account metadata. Disable re-login in Settings to remove it.</p>
           </div>
         </div>
         <div className="privacy-row">
-          <span>💻</span>
+
           <div>
             <h3>Local Account Management</h3>
             <p>
@@ -1341,7 +1294,7 @@ function InfoPage() {
           </div>
         </div>
         <div className="privacy-row">
-          <span>🛡️</span>
+
           <div>
             <h3>No Unnecessary Account Data Collection</h3>
             <p>
@@ -1352,16 +1305,7 @@ function InfoPage() {
           </div>
         </div>
       </section>
-      <section className="info-card telegram-card">
-        <h2>Need help or want the latest updates?</h2>
-        <p>
-          Follow the Flowpilot Telegram channel for announcements, guides, and
-          product updates.
-        </p>
-        <button className="secondary" disabled={!TELEGRAM_CHANNEL_URL}>
-          Join Telegram Channel
-        </button>
-      </section>
+
     </div>
   )
 }
@@ -1478,7 +1422,7 @@ function Card({
             draggable={false}
           />
         </div>
-        <div className="account-name"><h2 title={a.name}>{a.name}</h2><p>{a.flowSessionId ? <><img src={SERVICES.flow.logo} width="12" height="12" alt="" />Flow session · {sessionSource || "Source profile unavailable"}</> : service.name}</p></div>
+        <div className="account-name"><h2 title={a.name}>{a.name}</h2><p>{a.flowSessionId ? <><img src={SERVICES.flow.logo} width="12" height="12" alt="" />Flow session · {sessionSource || "Source profile not in list"}</> : service.name}</p></div>
       </div>
       <button className="primary wide" onClick={onOpen}>
         {resumable ? "Resume" : `Open ${service.shortName}`}
@@ -1499,6 +1443,8 @@ function Settings({
   clearingAllCaches: boolean
   onClearAllCaches: () => void
 }) {
+  const [version, setVersion] = useState(APP_VERSION)
+  useEffect(() => { void getVersion().then(setVersion).catch(() => {}) }, [])
   return (
     <div className="settings">
       <section>
@@ -1574,7 +1520,7 @@ function Settings({
         <div>
           <div className="eyebrow">ABOUT</div>
           <h2>
-            Flowpilot <span className="muted">{APP_VERSION}</span>
+            Flowpilot <span className="muted">{version}</span>
           </h2>
           <p>Multi-service desktop workspace and account manager.</p>
         </div>
@@ -1713,11 +1659,11 @@ function NameGeneratorSettings() {
       <input id="behind-the-name-key" type="password" autoComplete="new-password"
         value={apiKey} disabled={busy} maxLength={512}
         onChange={(event) => setApiKey(event.target.value)}
-        placeholder={enabled ? "Enter a new key to replace the saved one" : "Enter API key"} />
+        placeholder="Optional API key" />
       <div className="dialog-actions">
         <button className="secondary" disabled={busy} onClick={() => void useLocalNames()}>Use local names</button>
         <button className="primary" disabled={busy || !apiKey.trim()} onClick={() => void save()}>
-          {enabled ? "Replace API key" : "Save and enable"}
+          Save API key
         </button>
         {enabled && <button className="secondary" disabled={busy} onClick={() => void disable()}>Disable</button>}
       </div>
@@ -2031,7 +1977,7 @@ function FlowShell({
     <div className={`flow-shell ${bookmarkService ? "has-bookmarks" : ""}`}>
       <div className="flow-bar">
         <button className="back" disabled={closing} onClick={onBack}>‹ Accounts</button>
-        <strong className="workspace-service">{service.shortName}</strong>
+        <span className="sr-only">{service.shortName} workspace</span>
         <span className={`flow-status ${status === `${service.name} workspace` ? "is-ready" : ""}`} role="status">{status}</span>
         <div className="flow-controls">
           <strong className="active-profile-name" title={account.name}>{account.name}</strong>
