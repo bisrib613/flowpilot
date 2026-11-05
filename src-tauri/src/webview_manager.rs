@@ -229,9 +229,8 @@ fn flow_browser_args(port: u16) -> String {
 }
 
 
-// Only the app's known HTTPS services may access the system clipboard or
-// trigger multiple downloads without a new permission prompt. Neither
-// permission should be granted to OAuth pages or arbitrary navigations.
+// Only the app's known HTTPS services may trigger multiple downloads without
+// a new permission prompt. This allowlist does not grant clipboard access.
 fn trusted_service_origin(url: &tauri::Url) -> bool {
     url.scheme() == "https" && matches!(
         url.host_str(),

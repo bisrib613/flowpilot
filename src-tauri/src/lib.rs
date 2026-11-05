@@ -18,18 +18,20 @@ where
     F: FnOnce() -> Result<T, String> + Send + 'static,
     T: Send + 'static,
 {
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
+        // A timeout drops the receiver. Do not execute abandoned UI work later
+        // and let an old hide/open overtake a newer workspace activation.
+        if sender.is_closed() { return; }
         let _ = sender.send(operation());
     })
     .map_err(|e| e.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        receiver
-            .recv_timeout(Duration::from_secs(30))
-            .map_err(|_| "WebView operation timed out".to_string())?
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    // This cancels work that has not started; it cannot interrupt a running
+    // native COM call or roll back its side effects.
+    tokio::time::timeout(Duration::from_secs(30), receiver)
+        .await
+        .map_err(|_| "WebView operation timed out".to_string())?
+        .map_err(|_| "WebView operation was not completed".to_string())?
 }
 
 #[tauri::command]
