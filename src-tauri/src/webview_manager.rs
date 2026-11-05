@@ -26,7 +26,6 @@ const AUTOMATION_LABEL_PREFIX: &str = "flowpilot-automation";
 
 pub struct WebviewManager {
     active_account_id: Mutex<Option<String>>,
-    visible: Mutex<bool>,
     cached_accounts: Mutex<HashMap<String, u64>>,
     usage_counter: Mutex<u64>,
     operation: Mutex<()>,
@@ -40,7 +39,6 @@ impl Default for WebviewManager {
     fn default() -> Self {
         Self {
             active_account_id: Mutex::new(None),
-            visible: Mutex::new(false),
             cached_accounts: Mutex::new(HashMap::new()),
             usage_counter: Mutex::new(0),
             operation: Mutex::new(()),
@@ -564,10 +562,6 @@ fn open_view<R: Runtime>(
             .active_account_id
             .lock()
             .map_err(|_| "webview state unavailable")? = Some(key.clone());
-        *state
-            .visible
-            .lock()
-            .map_err(|_| "webview state unavailable")? = true;
         touch_account(&state, &key)?;
         return Ok(());
     }
@@ -664,58 +658,52 @@ fn open_view<R: Runtime>(
             }
             tauri::webview::NewWindowResponse::Deny
         });
-    window
+    let view = window
         .add_child(
             builder,
             tauri::LogicalPosition::new(if background { -10000.0 } else { x }, if background { -10000.0 } else { y }),
             tauri::LogicalSize::new(width, height),
         )
         .map_err(|e| e.to_string())?;
-    if let Some(view) = app.get_webview(&requested_label) {
-        attach_webview_permissions(&view)?;
-    }
-    if let Some((port, _)) = flow_environment {
-        state.automation_ports.lock().map_err(|_| "webview state unavailable")?.insert(key.clone(), port);
-    }
-
-    #[cfg(all(windows, feature = "diag"))]
-    if let Some(webview) = app.get_webview(&requested_label) {
-        let diagnostic_label = requested_label.clone();
-        webview
-            .with_webview(move |platform| {
-                if let Err(error) = crate::webview_diagnostics::attach(&platform.controller(), &platform.environment(), &diagnostic_label) {
-                    crate::webview_download_bridge::diag("InstrumentationAttachFailed", &format!("webview={} available=0", diagnostic_label));
-                    eprintln!("[flowpilot-diag] native instrumentation unavailable: {error}");
-                }
-            })
-            .map_err(|e| e.to_string())?;
-    }
-
-    if background {
-        if let Some(webview) = app.get_webview(&requested_label) {
-            webview.hide().map_err(|e| e.to_string())?;
-            crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=preloaded-hidden", requested_label));
-        }
+    let result = crate::webview_setup::initialize(|| -> Result<(), String> {
+        // Track the child before fallible setup so a failed rollback still leaves
+        // it discoverable by Close Current / Platform / All and the next eviction.
         touch_account(&state, &key)?;
-        return Ok(());
-    }
-    // Match the cached-view path: creation alone does not explicitly transfer
-    // native input focus to the newly displayed service child.
-    if let Some(webview) = app.get_webview(&requested_label) {
-        webview.set_focus().map_err(|error| error.to_string())?;
+        attach_webview_permissions(&view)?;
+        if let Some((port, _)) = flow_environment {
+            state.automation_ports.lock().map_err(|_| "webview state unavailable")?.insert(key.clone(), port);
+        }
+
+        #[cfg(all(windows, feature = "diag"))]
+        {
+            let diagnostic_label = requested_label.clone();
+            view
+                .with_webview(move |platform| {
+                    if let Err(error) = crate::webview_diagnostics::attach(&platform.controller(), &platform.environment(), &diagnostic_label) {
+                        crate::webview_download_bridge::diag("InstrumentationAttachFailed", &format!("webview={} available=0", diagnostic_label));
+                        eprintln!("[flowpilot-diag] native instrumentation unavailable: {error}");
+                    }
+                })
+                .map_err(|e| e.to_string())?;
+        }
+
+        if background {
+            view.hide().map_err(|e| e.to_string())?;
+            crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=preloaded-hidden", requested_label));
+            return Ok(());
+        }
+        // Match the cached-view path: creation alone does not explicitly transfer
+        // native input focus to the newly displayed service child.
+        view.set_focus().map_err(|error| error.to_string())?;
         crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=created-focus-requested", requested_label));
-    }
-    *state
-        .active_account_id
-        .lock()
-        .map_err(|_| "webview state unavailable")? = Some(key.clone());
-    *state
-        .visible
-        .lock()
-        .map_err(|_| "webview state unavailable")? = true;
-    touch_account(&state, &key)?;
+        *state
+            .active_account_id
+            .lock()
+            .map_err(|_| "webview state unavailable")? = Some(key.clone());
+        Ok(())
+    }, || destroy_view(app, &key));
     drop(operation);
-    Ok(())
+    result
 }
 
 pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<u16, String> {
@@ -972,7 +960,6 @@ fn destroy_view<R: Runtime>(app: &AppHandle<R>, key: &str) -> Result<(), String>
     let mut active = state.active_account_id.lock().map_err(|_| "webview state unavailable")?;
     if active.as_deref() == Some(key) {
         *active = None;
-        *state.visible.lock().map_err(|_| "webview state unavailable")? = false;
     }
     Ok(())
 }
@@ -1099,7 +1086,6 @@ pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>, service
                 webview.hide().map_err(|e| e.to_string())?;
                 crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=hidden", webview_label(&active_id)));
             }
-            *state.visible.lock().map_err(|_| "webview state unavailable")? = false;
         }
     }
     drop(operation);
@@ -1182,10 +1168,6 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
             .map_err(|_| "webview state unavailable")?;
         if active.as_ref().is_some_and(|key| affected.contains(key)) {
             *active = None;
-            *state
-                .visible
-                .lock()
-                .map_err(|_| "webview state unavailable")? = false;
         }
     }
 

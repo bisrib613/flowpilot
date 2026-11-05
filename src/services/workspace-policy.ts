@@ -29,9 +29,6 @@ export function neighborIndices(count: number, active: number, perSide: number):
   }
   return result
 }
-export function shortcutBounds(count: number, active: number, before = 0, after = 0): [number, number] {
-  return [Math.max(0, active - 5 - before), Math.min(count, active + 6 + after)]
-}
 export function readPreloadSides(): number {
   try {
     const saved = localStorage.getItem("flowpilot-preload-sides")

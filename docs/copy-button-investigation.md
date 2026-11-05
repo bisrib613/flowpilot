@@ -1,6 +1,24 @@
 # Service Copy button investigation
 
-## Current status — PR preview 1.5.20
+## Current status — PR preview 1.5.22
+
+The user confirmed preload is two profiles per side. The reported profile-3
+failure clears after visiting other profiles, but the furthest visited profile
+is uncertain. With fixed ordering, profile 3 is retained through profile 5 and
+evicted at profile 6. Do not infer reuse versus recreation without the actual
+sequence. Close All also restores functionality according to the user.
+
+1.5.21 cancels abandoned queued UI work after timeout. 1.5.22 registers newly
+created children before fallible setup and rolls back setup errors using the
+common destroy path. A failed destroy leaves the cache entry available for a
+later cleanup attempt. Neither correction establishes the user's failure cause.
+See `preload-lifecycle-20261105.md` for scope and validation limits.
+
+Copy and delayed ChatGPT rendering remain open. No extra focus workaround,
+clipboard wrapper, automatic reload or forced change to preload settings was
+added. Normal builds still omit optional diagnostics.
+
+## Lifecycle correction — PR preview 1.5.20
 
 The normal PR installer no longer enables `diag`. The clipboard prototype and
 promise wrappers introduced in 1.5.18 have been removed, including from the

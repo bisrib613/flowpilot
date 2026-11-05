@@ -9,7 +9,6 @@ vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/services/workspace-po
   compilerOptions: { module: ts.ModuleKind.CommonJS }
 }).outputText, { exports: exportsObject, localStorage: { getItem: () => saved } })
 const neighbors = (...args) => Array.from(exportsObject.neighborIndices(...args))
-const bounds = (...args) => Array.from(exportsObject.shortcutBounds(...args))
 test('boundaries do not transfer unused slots to the opposite side', () => {
   assert.deepEqual(neighbors(100, 0, 4), [1, 2, 3, 4])
   assert.deepEqual(neighbors(100, 2, 4).sort((a,b) => a-b), [0,1,3,4,5,6])
@@ -32,11 +31,19 @@ test('100-profile traversal stays within bounds and the configured per-side limi
     assert.ok(list.every(i=>i>=0 && i<100 && i!==active))
   }
 })
-test('More expands shortcuts independently of live WebViews', () => {
-  assert.deepEqual(bounds(100,6), [1,12])
-  assert.deepEqual(bounds(100,6,5,5), [0,17])
-  assert.deepEqual(bounds(3,0), [0,3])
-  assert.deepEqual(neighbors(100,6,2), [7,5,8,4])
+test('two-side preload retains profile 3 through profile 5, then evicts it at profile 6', () => {
+  const keep = active => new Set([active, ...neighbors(12, active - 1, 2).map(i => i + 1)])
+  for (const active of [1, 2, 3, 4, 5]) assert.equal(keep(active).has(3), true)
+  assert.equal(keep(6).has(3), false)
+  assert.deepEqual([...keep(6)].sort((a,b) => a-b), [4,5,6,7,8])
+})
+test('returning to profile 1 evicts profiles 4/5; later opens can preload them again', () => {
+  const keep = active => new Set([active, ...neighbors(12, active - 1, 2).map(i => i + 1)])
+  const before = keep(6), after = keep(1)
+  assert.deepEqual([...before].filter(i => !after.has(i)).sort((a,b) => a-b), [4,5,6,7,8])
+  assert.deepEqual([...after].sort((a,b) => a-b), [1,2,3])
+  assert.equal(keep(2).has(4), true)
+  assert.equal(keep(3).has(5), true)
 })
 test('preload preference rejects invalid values and preserves Off', () => {
   for (const value of [null,'no','6','-1','2.5']) { saved=value; assert.equal(exportsObject.readPreloadSides(),2) }
