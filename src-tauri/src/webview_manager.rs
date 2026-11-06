@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use crate::webview_health::ViewHealth;
 
 use tauri::path::BaseDirectory;
 use tauri::webview::WebviewBuilder;
@@ -8,10 +9,16 @@ use tauri::{AppHandle, Manager, Runtime, WebviewUrl};
 
 #[cfg(windows)]
 use webview2_com::{
-    ClearBrowsingDataCompletedHandler,
+    ClearBrowsingDataCompletedHandler, WindowCloseRequestedEventHandler,
+    PermissionRequestedEventHandler, ProcessFailedEventHandler, NavigationCompletedEventHandler,
     Microsoft::Web::WebView2::Win32::{
         ICoreWebView2Profile2, ICoreWebView2_13,
         COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
+        COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS,
+        COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
     },
 };
 #[cfg(windows)]
@@ -21,10 +28,14 @@ const WEBVIEW_LABEL_PREFIX: &str = "flowpilot-service";
 const AUTOMATION_LABEL_PREFIX: &str = "flowpilot-automation";
 
 
+struct CachedView {
+    revision: u64,
+    health: Arc<ViewHealth>,
+}
+
 pub struct WebviewManager {
     active_account_id: Mutex<Option<String>>,
-    visible: Mutex<bool>,
-    cached_accounts: Mutex<HashMap<String, u64>>,
+    cached_accounts: Mutex<HashMap<String, CachedView>>,
     usage_counter: Mutex<u64>,
     operation: Mutex<()>,
     preload_epoch: Mutex<u64>,
@@ -37,7 +48,6 @@ impl Default for WebviewManager {
     fn default() -> Self {
         Self {
             active_account_id: Mutex::new(None),
-            visible: Mutex::new(false),
             cached_accounts: Mutex::new(HashMap::new()),
             usage_counter: Mutex::new(0),
             operation: Mutex::new(()),
@@ -51,11 +61,12 @@ impl Default for WebviewManager {
 
 fn service_url(service: &str) -> Result<&'static str, String> {
     match service {
-        "flow" => Ok("https://labs.google/fx/tools/flow"),
+        "flow" => Ok("https://flow.google.com/"),
         "dola" => Ok("https://www.dola.com/"),
         "leonardo" => Ok("https://app.leonardo.ai/"),
         "chatgpt" => Ok("https://chatgpt.com/"),
         "migoo" => Ok("https://migoo.ai/home"),
+        "claude" => Ok("https://claude.ai/"),
         _ => Err("invalid service".to_string()),
     }
 }
@@ -91,16 +102,66 @@ fn session_key<R: Runtime>(app: &AppHandle<R>, service: &str, account_id: &str) 
     session_key_from_accounts(&accounts, service, account_id)
 }
 
+// Linked cards borrow their source directory; they never own its deletion.
+// An owner also keeps its directory while another card still references it.
+fn may_delete_session_directory(accounts: &serde_json::Value, service: &str, account_id: &str) -> Result<bool, String> {
+    let own_key = profile_key(service, account_id)?;
+    let storage_key = session_key_from_accounts(accounts, service, account_id)?;
+    if own_key != storage_key { return Ok(false); }
+    if let Some(rows) = accounts.as_array() {
+        for row in rows {
+            let Some(id) = row.get("id").and_then(|v| v.as_str()) else { continue };
+            let row_service = row.get("service").and_then(|v| v.as_str()).unwrap_or("flow");
+            if id == account_id && row_service == service { continue; }
+            if session_key_from_accounts(accounts, row_service, id)? == storage_key {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod session_tests {
-    use super::session_key_from_accounts;
+    use super::{session_key_from_accounts, may_delete_session_directory};
+    #[test]
+    fn automatic_download_permissions_are_scoped_to_trusted_https_services() {
+        use super::trusted_service_origin;
+        let parse = |url: &str| url.parse::<tauri::Url>().unwrap();
+        for url in ["https://claude.ai/new", "https://chatgpt.com/", "https://flow.google.com/"] {
+            assert!(trusted_service_origin(&parse(url)));
+        }
+        for url in ["https://claude.ai.evil.invalid/", "http://claude.ai/", "https://accounts.google.com/"] {
+            assert!(!trusted_service_origin(&parse(url)));
+        }
+    }
+
     use serde_json::json;
+
+    #[test]
+    fn deletion_preserves_borrowed_and_referenced_session_directories() {
+        let accounts = json!([
+            {"id":"a","service":"flow"},
+            {"id":"b","service":"claude","flowSessionId":"a"},
+            {"id":"c","service":"chatgpt","flowSessionId":"a"},
+            {"id":"d","service":"claude"}
+        ]);
+        assert!(!may_delete_session_directory(&accounts, "claude", "b").unwrap());
+        assert!(!may_delete_session_directory(&accounts, "flow", "a").unwrap());
+        assert!(may_delete_session_directory(&accounts, "claude", "d").unwrap());
+        // Deleting the final borrowed card must not wipe an orphaned source.
+        let orphan = json!([accounts[1].clone()]);
+        assert!(!may_delete_session_directory(&orphan, "claude", "b").unwrap());
+        let owner_only = json!([accounts[0].clone()]);
+        assert!(may_delete_session_directory(&owner_only, "flow", "a").unwrap());
+    }
 
     #[test]
     fn legacy_and_normal_profiles_keep_their_existing_directories() {
         let accounts = json!([{"id":"a","name":"Original"}, {"id":"b","service":"chatgpt"}]);
         assert_eq!(session_key_from_accounts(&accounts, "flow", "a").unwrap(), "flow-a");
         assert_eq!(session_key_from_accounts(&accounts, "chatgpt", "b").unwrap(), "chatgpt-b");
+        assert_eq!(session_key_from_accounts(&accounts, "claude", "new").unwrap(), "claude-new");
     }
 
     #[test]
@@ -112,6 +173,7 @@ mod session_tests {
         ]);
         assert_eq!(session_key_from_accounts(&accounts, "chatgpt", "b").unwrap(), "flow-a");
         assert_eq!(session_key_from_accounts(&accounts, "dola", "c").unwrap(), "flow-other");
+        assert_eq!(session_key_from_accounts(&accounts, "claude", "unlinked").unwrap(), "claude-unlinked");
         let remaining = json!([accounts[1].clone()]);
         assert_eq!(session_key_from_accounts(&remaining, "chatgpt", "b").unwrap(), "flow-a");
     }
@@ -135,9 +197,61 @@ fn touch_account(state: &WebviewManager, account_id: &str) -> Result<(), String>
         .cached_accounts
         .lock()
         .map_err(|_| "webview state unavailable")?;
-    cached.insert(account_id.to_string(), *counter);
+    cached.entry(account_id.to_string())
+        .and_modify(|entry| entry.revision = *counter)
+        .or_insert_with(|| CachedView { revision: *counter, health: Arc::new(ViewHealth::default()) });
     Ok(())
 }
+
+fn cached_view_failed(state: &WebviewManager, key: &str) -> Result<bool, String> {
+    Ok(state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
+        .get(key).is_some_and(|entry| entry.health.needs_recreate()))
+}
+
+#[cfg(windows)]
+fn attach_view_health<R: Runtime>(view: &tauri::Webview<R>, health: Arc<ViewHealth>) -> Result<(), String> {
+    use crate::webview_health::Failure;
+    let label = view.label().to_string();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    view.with_webview(move |platform| {
+        let result = (|| -> Result<(), String> {
+            let native = unsafe { platform.controller().CoreWebView2() }.map_err(|e| e.to_string())?;
+            let process_health = health.clone();
+            let mut token = Default::default();
+            unsafe { native.add_ProcessFailed(&ProcessFailedEventHandler::create(Box::new(move |_, args| {
+                if let Some(args) = args {
+                    let mut kind = Default::default();
+                    args.ProcessFailedKind(&mut kind)?;
+                    let failure = match kind {
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED |
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED => Failure::Exited,
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE => Failure::Unresponsive,
+                        _ => Failure::Other,
+                    };
+                    process_health.record(failure);
+                    crate::webview_download_bridge::diag("NativeProcessFailed", &format!("webview={} kind={}", label, kind.0));
+                }
+                Ok(())
+            })), &mut token) }.map_err(|e| e.to_string())?;
+            unsafe { native.add_NavigationCompleted(&NavigationCompletedEventHandler::create(Box::new(move |_, args| {
+                if let Some(args) = args {
+                    let mut success = Default::default();
+                    args.IsSuccess(&mut success)?;
+                    if success.as_bool() { health.navigation_completed(); }
+                }
+                Ok(())
+            })), &mut token) }.map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        let _ = sender.send(result);
+    }).map_err(|e| e.to_string())?;
+    // open_view is dispatched on the UI thread, so with_webview is inline.
+    // Never block the UI thread waiting for another event-loop turn.
+    receiver.try_recv().map_err(|_| "WebView health setup must run on the UI thread".to_string())?
+}
+
+#[cfg(not(windows))]
+fn attach_view_health<R: Runtime>(_view: &tauri::Webview<R>, _health: Arc<ViewHealth>) -> Result<(), String> { Ok(()) }
 
 fn validate_account_id(account_id: &str) -> Result<(), String> {
     if account_id.is_empty()
@@ -173,11 +287,136 @@ fn flow_browser_args(port: u16) -> String {
     format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={port} --remote-allow-origins=*")
 }
 
+
+// Only the app's known HTTPS services may trigger multiple downloads without
+// a new permission prompt. This allowlist does not grant clipboard access.
+fn trusted_service_origin(url: &tauri::Url) -> bool {
+    url.scheme() == "https" && matches!(
+        url.host_str(),
+        Some(
+            "flow.google.com" | "claude.ai" | "chatgpt.com" | "app.leonardo.ai" |
+            "leonardo.ai" | "www.dola.com" | "dola.com" | "migoo.ai" |
+            "www.migoo.ai"
+        )
+    )
+}
+
+#[cfg(windows)]
+fn attach_webview_permissions<R: Runtime>(
+    webview: &tauri::Webview<R>,
+) -> Result<(), String> {
+    // Tauri 2.11 does not expose on_permission_request. Use WebView2
+    // directly to allow repeated downloads only from the requesting trusted
+    // service origin. Clipboard copy uses user-gesture writeText; never
+    // silently grant clipboard READ access for an unrelated copy action.
+    let diagnostic_label = webview.label().to_string();
+    webview.with_webview(move |platform| {
+        let result = (|| -> Result<(), String> {
+            let native = unsafe { platform.controller().CoreWebView2() }
+                .map_err(|error| error.to_string())?;
+            let mut token = Default::default();
+            unsafe {
+                native.add_PermissionRequested(
+                    &PermissionRequestedEventHandler::create(Box::new(move |_, args| {
+                        let Some(args) = args else { return Ok(()); };
+                        let mut kind = Default::default();
+                        args.PermissionKind(&mut kind)?;
+                        crate::webview_download_bridge::diag("PermissionRequested", &format!("webview={} kind={}", diagnostic_label, kind.0));
+                        if kind != COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS {
+                            return Ok(());
+                        }
+
+                        let mut raw_origin = windows::core::PWSTR::null();
+                        args.Uri(&mut raw_origin)?;
+                        // WebView2 allocates with CoTaskMemAlloc; always release
+                        // the returned pointer and do not log sensitive URLs.
+                        let origin = raw_origin.to_string();
+                        windows::Win32::System::Com::CoTaskMemFree(Some(raw_origin.0.cast()));
+                        let Ok(origin) = origin else { return Ok(()); };
+                        if let Ok(url) = origin.parse::<tauri::Url>() {
+                            if trusted_service_origin(&url) {
+                                args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
+                                eprintln!("[flowpilot-download] repeated downloads permitted for {}", url.host_str().unwrap_or("unknown"));
+                            }
+                        }
+                        Ok(())
+                    })),
+                    &mut token,
+                )
+            }.map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("[flowpilot-webview] permission handler unavailable: {error}");
+        }
+    }).map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+fn attach_webview_permissions<R: Runtime>(
+    _webview: &tauri::Webview<R>,
+) -> Result<(), String> {
+    Ok(())
+}
+
 fn flow_builder<R: Runtime>(label: String, url: WebviewUrl, profile: PathBuf, browser_args: &str) -> WebviewBuilder<R> {
     WebviewBuilder::new(label, url)
         .data_directory(profile)
         .additional_browser_args(browser_args)
+        
 }
+
+#[cfg(windows)]
+fn attach_popup_window_close_handler<R: Runtime>(
+    popup: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    let app = popup.app_handle().clone();
+    let popup_label = popup.label().to_string();
+    // WebView2's window.close() request must close the TOP-LEVEL Tauri popup,
+    // not just the native WebView container. Register only for our popups:
+    // never close the service workspace or a shared Google Flow profile.
+    popup.with_webview(move |platform| {
+        let result = (|| -> Result<(), String> {
+            let native = unsafe { platform.controller().CoreWebView2() }
+                .map_err(|error| error.to_string())?;
+            let callback_app = app.clone();
+            let callback_label = popup_label.clone();
+            let mut token = Default::default();
+            unsafe {
+                native.add_WindowCloseRequested(
+                    &WindowCloseRequestedEventHandler::create(Box::new(move |_, _| {
+                        let dispatch_app = callback_app.clone();
+                        let close_app = callback_app.clone();
+                        let close_label = callback_label.clone();
+                        // Dispatch AFTER WebView2's event returns to avoid
+                        // destroying a WebView from its own COM callback.
+                        let _ = dispatch_app.run_on_main_thread(move || {
+                            if let Some(window) = close_app.get_webview_window(&close_label) {
+                                let _ = window.close();
+                            }
+                        });
+                        Ok(())
+                    })),
+                    &mut token,
+                )
+            }
+            .map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("[flowpilot-webview] OAuth popup close handler unavailable: {error}");
+        }
+    })
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+fn attach_popup_window_close_handler<R: Runtime>(
+    _popup: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    Ok(())
+}
+
 
 
 #[cfg(windows)]
@@ -351,6 +590,7 @@ fn open_view<R: Runtime>(
         .ok_or_else(|| "main window not found".to_string())?;
 
     let requested_label = webview_label(&key);
+    crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=open-request background={}", requested_label, background));
     let active_account = state
         .active_account_id
         .lock()
@@ -365,6 +605,14 @@ fn open_view<R: Runtime>(
             }
         }
     }
+    if cached_view_failed(&state, &key)? {
+        if background {
+            return Err("Cached WebView reported a native process failure; open this profile to recover it".into());
+        }
+        // Recovery is owned by the foreground open, outside the native callback.
+        // Destroy only this controller; keep its cookies and profile directory.
+        destroy_view(app, &key)?;
+    }
     if let Some(webview) = app.get_webview(&requested_label) {
         if background { return Ok(()); }
         webview
@@ -374,14 +622,15 @@ fn open_view<R: Runtime>(
             .set_size(tauri::LogicalSize::new(width, height))
             .map_err(|e| e.to_string())?;
         webview.show().map_err(|e| e.to_string())?;
+        // Restoring a hidden child WebView does not necessarily restore
+        // Windows input focus. Clipboard and user-gesture downloads depend
+        // on the active view receiving the actual pointer/keyboard action.
+        webview.set_focus().map_err(|error| error.to_string())?;
+        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=restored-focus-requested", requested_label));
         *state
             .active_account_id
             .lock()
             .map_err(|_| "webview state unavailable")? = Some(key.clone());
-        *state
-            .visible
-            .lock()
-            .map_err(|_| "webview state unavailable")? = true;
         touch_account(&state, &key)?;
         return Ok(());
     }
@@ -394,6 +643,8 @@ fn open_view<R: Runtime>(
         .map_err(|_| "invalid service URL")?,
     );
     let popup_app = app.clone();
+    let relogin_source_id = if service == "flow" { Some(account_id.clone()) } else { None };
+    let popup_relogin_id = relogin_source_id.clone();
     let popup_prefix = format!("{requested_label}-popup-");
     let popup_profile = profile.clone();
     // Every WebView sharing the Flow directory must use identical browser arguments.
@@ -415,10 +666,20 @@ fn open_view<R: Runtime>(
     let builder = if let Some((_, browser_args)) = &flow_environment {
         flow_builder(requested_label.clone(), url, profile, browser_args)
     } else {
-        WebviewBuilder::new(requested_label.clone(), url).data_directory(profile)
+        WebviewBuilder::new(requested_label.clone(), url)
+            .data_directory(profile)
+            
     }
         .focused(!background)
+        .initialization_script(if cfg!(all(windows, feature = "diag")) {
+            include_str!("webview_interaction_diagnostics.js")
+        } else { "" })
         .on_download(crate::native_downloads::handle)
+        .on_page_load(move |webview, payload| {
+            if let Some(id) = &relogin_source_id {
+                crate::google_relogin::on_page_load(&webview, payload, id);
+            }
+        })
         .on_navigation(|url| url.scheme() == "https" || url.scheme() == "blob")
         .on_new_window(move |url, features| {
             if url.scheme() == "https" || url.scheme() == "blob" || url.as_str() == "about:blank" {
@@ -429,8 +690,17 @@ fn open_view<R: Runtime>(
                     WebviewUrl::External("about:blank".parse().expect("valid blank URL")),
                 )
                 .data_directory(popup_profile.clone())
+                
                 .window_features(features)
                 .title("Flowpilot — service window")
+                .on_page_load({
+                    let flow_id = popup_relogin_id.clone();
+                    move |webview, payload| {
+                        if let Some(id) = &flow_id {
+                            crate::google_relogin::on_page_load(webview.as_ref(), payload, id);
+                        }
+                    }
+                })
                 .on_download(crate::native_downloads::handle)
                 .inner_size(520.0, 720.0)
                 .on_navigation(|url| url.scheme() == "https" || url.scheme() == "blob" || url.as_str() == "about:blank")
@@ -441,53 +711,71 @@ fn open_view<R: Runtime>(
                     popup_builder.build()
                 };
                 match popup {
-                    Ok(window) => return tauri::webview::NewWindowResponse::Create { window },
+                    Ok(window) => {
+                        // Keep the opener relationship for Google OAuth and
+                        // preserve the shared browser profile/cookies.
+                        if let Err(error) = attach_webview_permissions(window.as_ref()) {
+                            eprintln!("[flowpilot-webview] popup permission setup failed: {error}");
+                        }
+                        if let Err(error) = attach_popup_window_close_handler(&window) {
+                            eprintln!("[flowpilot-webview] popup close setup failed: {error}");
+                        }
+                        return tauri::webview::NewWindowResponse::Create { window };
+                    }
                     Err(error) => eprintln!("[flowpilot-webview] sign-in window failed: {error}"),
                 }
             }
             tauri::webview::NewWindowResponse::Deny
         });
-    window
+    let view = window
         .add_child(
             builder,
             tauri::LogicalPosition::new(if background { -10000.0 } else { x }, if background { -10000.0 } else { y }),
             tauri::LogicalSize::new(width, height),
         )
         .map_err(|e| e.to_string())?;
-    if let Some((port, _)) = flow_environment {
-        state.automation_ports.lock().map_err(|_| "webview state unavailable")?.insert(key.clone(), port);
-    }
-
-    #[cfg(all(windows, feature = "diag"))]
-    if let Some(webview) = app.get_webview(&requested_label) {
-        let diagnostic_label = requested_label.clone();
-        webview
-            .with_webview(move |platform| {
-                if let Ok(native) = unsafe { platform.controller().CoreWebView2() } {
-                    let _ = crate::webview_diagnostics::attach(&native, &diagnostic_label);
-                }
-            })
-            .map_err(|e| e.to_string())?;
-    }
-
-    if background {
-        if let Some(webview) = app.get_webview(&requested_label) {
-            webview.hide().map_err(|e| e.to_string())?;
-        }
+    let result = crate::webview_setup::initialize(|| -> Result<(), String> {
+        // Track the child before fallible setup so a failed rollback still leaves
+        // it discoverable by Close Current / Platform / All and the next eviction.
         touch_account(&state, &key)?;
-        return Ok(());
-    }
-    *state
-        .active_account_id
-        .lock()
-        .map_err(|_| "webview state unavailable")? = Some(key.clone());
-    *state
-        .visible
-        .lock()
-        .map_err(|_| "webview state unavailable")? = true;
-    touch_account(&state, &key)?;
+        let health = state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
+            .get(&key).ok_or("new WebView is not tracked")?.health.clone();
+        attach_view_health(&view, health)?;
+        attach_webview_permissions(&view)?;
+        if let Some((port, _)) = flow_environment {
+            state.automation_ports.lock().map_err(|_| "webview state unavailable")?.insert(key.clone(), port);
+        }
+
+        #[cfg(all(windows, feature = "diag"))]
+        {
+            let diagnostic_label = requested_label.clone();
+            view
+                .with_webview(move |platform| {
+                    if let Err(error) = crate::webview_diagnostics::attach(&platform.controller(), &platform.environment(), &diagnostic_label) {
+                        crate::webview_download_bridge::diag("InstrumentationAttachFailed", &format!("webview={} available=0", diagnostic_label));
+                        eprintln!("[flowpilot-diag] native instrumentation unavailable: {error}");
+                    }
+                })
+                .map_err(|e| e.to_string())?;
+        }
+
+        if background {
+            view.hide().map_err(|e| e.to_string())?;
+            crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=preloaded-hidden", requested_label));
+            return Ok(());
+        }
+        // Match the cached-view path: creation alone does not explicitly transfer
+        // native input focus to the newly displayed service child.
+        view.set_focus().map_err(|error| error.to_string())?;
+        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=created-focus-requested", requested_label));
+        *state
+            .active_account_id
+            .lock()
+            .map_err(|_| "webview state unavailable")? = Some(key.clone());
+        Ok(())
+    }, || destroy_view(app, &key));
     drop(operation);
-    Ok(())
+    result
 }
 
 pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<u16, String> {
@@ -532,11 +820,12 @@ pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: Strin
     let browser_args = flow_browser_args(port);
     tauri::WebviewWindowBuilder::new(
         app,
-        label,
+        label.clone(),
         WebviewUrl::External(service_url("flow")?.parse().map_err(|_| "invalid Flow URL")?),
     )
     .data_directory(profile)
     .additional_browser_args(&browser_args)
+    
     .title("FlowPilot — AutoPrompt session")
     .inner_size(1280.0, 800.0)
     .visible(true)
@@ -545,9 +834,180 @@ pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: Strin
     .on_navigation(|url| url.scheme() == "https" || url.scheme() == "blob")
     .build()
     .map_err(|error| error.to_string())?;
+    if let Some(window) = app.get_webview_window(&label) {
+        attach_webview_permissions(window.as_ref())?;
+    }
     state.automation_ports.lock().map_err(|_| "webview state unavailable")?.insert(key.clone(), port);
     touch_account(&state, &key)?;
     Ok(port)
+}
+
+// A background job may only clean up the exact view revision it borrowed.
+// Foreground open, reuse, and replacement all call touch_account, invalidating
+// the old lease without another per-profile ownership map.
+pub struct BackgroundView {
+    key: String,
+    revision: u64,
+    created: bool,
+}
+
+fn background_view(state: &WebviewManager, key: String, created: bool) -> Result<BackgroundView, String> {
+    let revision = state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
+        .get(&key).ok_or("background WebView is no longer open")?.revision;
+    Ok(BackgroundView { key, revision, created })
+}
+
+fn background_view_is_current(state: &WebviewManager, view: &BackgroundView) -> Result<bool, String> {
+    Ok(state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
+        .get(&view.key).map(|entry| entry.revision) == Some(view.revision))
+}
+
+fn finish_background_view<R: Runtime>(app: &AppHandle<R>, view: BackgroundView) -> Result<(), String> {
+    let state = app.state::<WebviewManager>();
+    let _operation = state.operation.lock().map_err(|_| "webview state unavailable")?;
+    if !background_view_is_current(&state, &view)? { return Ok(()); }
+    if view.created { return destroy_view(app, &view.key); }
+    let prefix = format!("{}-popup-", webview_label(&view.key));
+    for (label, popup) in app.webview_windows() {
+        if label.starts_with(&prefix) { popup.close().map_err(|error| error.to_string())?; }
+    }
+    Ok(())
+}
+
+// Bulk sharing only creates service WebViews that reference existing Flow
+// directories. Never delete or clear a source profile during the batch.
+pub fn begin_bulk_shared_login<R: Runtime>(
+    app: &AppHandle<R>, account_id: String, service: String,
+) -> Result<BackgroundView, String> {
+    if service == "flow" { return Err("Bulk shared login needs a destination service".into()); }
+    let key = profile_key(&service, &account_id)?;
+    let accounts = crate::account_store::load_accounts(app.clone())?
+        .ok_or("Account storage unavailable")?;
+    let rows = accounts.as_array().ok_or("Invalid account storage")?;
+    let account = rows.iter().find(|row|
+        row.get("id").and_then(|v| v.as_str()) == Some(account_id.as_str()) &&
+        row.get("service").and_then(|v| v.as_str()) == Some(service.as_str())
+    ).ok_or("Linked destination account was not saved")?;
+    let source_id = account.get("flowSessionId").and_then(|v| v.as_str())
+        .ok_or("Account does not have a linked Flow session")?;
+    let source_exists = rows.iter().any(|row|
+        row.get("id").and_then(|v| v.as_str()) == Some(source_id) &&
+        row.get("service").and_then(|v| v.as_str()).unwrap_or("flow") == "flow"
+    );
+    if !source_exists || !profile_path(app, &profile_key("flow", source_id)?)?.exists() {
+        return Err("invalid_flow_session".into());
+    }
+    let created = app.get_webview(&webview_label(&key)).is_none();
+    open_view(app, account_id, service, 0.0, 0.0, 980.0, 720.0, true)?;
+    background_view(&app.state::<WebviewManager>(), key, created)
+}
+
+// Only evaluate our local, fixed scripts on the matching service or Google
+// chooser. Remote pages never receive native Tauri capabilities or secrets.
+pub fn evaluate_bulk_shared_login<R: Runtime>(
+    app: &AppHandle<R>, account_id: String, service: String,
+    expected_email: String, profile_name: String, signup_name: Option<String>,
+    signup_name_ready: bool, click_enabled: bool,
+) -> Result<Vec<std::sync::mpsc::Receiver<String>>, String> {
+    let key = profile_key(&service, &account_id)?;
+    let label = webview_label(&key);
+    let mut responses = Vec::new();
+    let mut evaluate = |view: &tauri::Webview<R>| -> Result<(), String> {
+        let url = view.url().map_err(|e| e.to_string())?;
+        if url.scheme() != "https" { return Ok(()); }
+        let host = url.host_str().unwrap_or("");
+        let google = host == "accounts.google.com";
+        let allowed = match service.as_str() {
+            "claude" => matches!(host, "claude.ai"),
+            "chatgpt" => matches!(host, "chatgpt.com" | "auth.openai.com"),
+            "leonardo" => matches!(host, "app.leonardo.ai" | "leonardo.ai"),
+            "dola" => matches!(host, "www.dola.com" | "dola.com"),
+            "migoo" => matches!(host, "migoo.ai" | "www.migoo.ai"),
+            _ => false,
+        };
+        if !google && !allowed { return Ok(()); }
+        let js = if google {
+            include_str!("bulk_shared_google_chooser.js")
+                .replace("__FLOWPILOT_EXPECTED_EMAIL__", &serde_json::to_string(&expected_email).map_err(|e| e.to_string())?)
+                .replace("__FLOWPILOT_CAN_CLICK__", "true")
+        } else {
+            include_str!("bulk_shared_service_login.js")
+                .replace("__FLOWPILOT_SERVICE__", &serde_json::to_string(&service).map_err(|e| e.to_string())?)
+                .replace("__FLOWPILOT_PROFILE_NAME__", &serde_json::to_string(&profile_name).map_err(|e| e.to_string())?)
+                .replace("__FLOWPILOT_GENERATED_NAME__", &serde_json::to_string(&signup_name).map_err(|e| e.to_string())?)
+                .replace("__FLOWPILOT_SIGNUP_NAME_READY__", if signup_name_ready { "true" } else { "false" })
+                .replace("__FLOWPILOT_CAN_CLICK__", if click_enabled { "true" } else { "false" })
+        };
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        view.eval_with_callback(js, move |result| {
+            let _ = tx.send(result);
+        }).map_err(|e| e.to_string())?;
+        responses.push(rx);
+        Ok(())
+    };
+    if let Some(view) = app.get_webview(&label) { evaluate(&view)?; }
+    for (popup_label, popup) in app.webview_windows() {
+        if popup_label.starts_with(&format!("{label}-popup-")) {
+            evaluate(popup.as_ref())?;
+        }
+    }
+    Ok(responses)
+}
+
+pub fn finish_bulk_shared_login<R: Runtime>(
+    app: &AppHandle<R>, view: BackgroundView, preserve_attention_view: bool,
+) -> Result<(), String> {
+    if preserve_attention_view { return Ok(()); }
+    finish_background_view(app, view)
+}
+
+const FLOW_CHECK_URL: &str = "https://flow.google.com/";
+
+// A manual re-login scan opens at most one temporary profile at a time.
+// Existing cached WebViews are reused without changing the active account.
+pub fn begin_flow_profile_check<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<Option<BackgroundView>, String> {
+    let key = profile_key("flow", &account_id)?;
+    let accounts = crate::account_store::load_accounts(app.clone())?
+        .ok_or_else(|| "Account storage unavailable".to_string())?;
+    let exists = accounts.as_array().is_some_and(|rows| rows.iter().any(|row| {
+        row.get("id").and_then(|value| value.as_str()) == Some(account_id.as_str())
+            && row.get("service").and_then(|value| value.as_str()).unwrap_or("flow") == "flow"
+    }));
+    if !exists { return Err("Google Flow profile not found".into()); }
+    // Do not initiate a fresh login for profiles that have never been opened.
+    if !profile_path(app, &key)?.exists() { return Ok(None); }
+    let label = webview_label(&key);
+    let created = app.get_webview(&label).is_none();
+    if created {
+        open_view(app, account_id, "flow".into(), 0.0, 0.0, 980.0, 720.0, true)?;
+    }
+    let webview = app.get_webview(&label).ok_or("Flow WebView was not created")?;
+    webview.navigate(FLOW_CHECK_URL.parse().map_err(|_| "Invalid Flow check URL")?)
+        .map_err(|error| error.to_string())?;
+    background_view(&app.state::<WebviewManager>(), key, created).map(Some)
+}
+
+pub fn poll_flow_profile_check<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<String, String> {
+    let key = profile_key("flow", &account_id)?;
+    let view = app.get_webview(&webview_label(&key)).ok_or("Flow WebView is no longer open")?;
+    view.url().map(|url| url.to_string()).map_err(|error| error.to_string())
+}
+
+pub fn click_flow_relogin_entry<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<(), String> {
+    let key = profile_key("flow", &account_id)?;
+    let view = app.get_webview(&webview_label(&key)).ok_or("Flow WebView is no longer open")?;
+    let current = view.url().map_err(|error| error.to_string())?;
+    if current.scheme() != "https" || current.host_str() != Some("flow.google.com") || current.path() != "/about" {
+        return Err("Flow is not on the signed-out landing page".into());
+    }
+    // No password is ever used here; login proceeds through Google's ordinary OAuth UI.
+    // Fail closed if Flow changes the landing-page button markup.
+    view.eval(include_str!("flow_landing_relogin.js")).map_err(|error| error.to_string())
+}
+
+pub fn finish_flow_profile_check<R: Runtime>(app: &AppHandle<R>, view: BackgroundView) -> Result<(), String> {
+    if !view.created { return Ok(()); }
+    finish_background_view(app, view)
 }
 
 // These operations run on the UI thread. Epochs reject stale queued preload work.
@@ -558,25 +1018,29 @@ fn cancel_preloads(state: &WebviewManager) -> Result<u64, String> {
     Ok(*epoch)
 }
 
+fn destroy_view<R: Runtime>(app: &AppHandle<R>, key: &str) -> Result<(), String> {
+    crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=destroy", webview_label(key)));
+    let state = app.state::<WebviewManager>();
+    let label = webview_label(key);
+    for (popup_label, popup) in app.webview_windows() {
+        if popup_label.starts_with(&format!("{label}-popup-")) { popup.close().map_err(|e| e.to_string())?; }
+    }
+    crate::webview_download_bridge::cancel_for_webview(&app.state::<crate::webview_download_bridge::DownloadState>(), &label);
+    if let Some(webview) = app.get_webview(&label) { webview.close().map_err(|e| e.to_string())?; }
+    state.cached_accounts.lock().map_err(|_| "webview state unavailable")?.remove(key);
+    state.automation_ports.lock().map_err(|_| "webview state unavailable")?.remove(key);
+    let mut active = state.active_account_id.lock().map_err(|_| "webview state unavailable")?;
+    if active.as_deref() == Some(key) {
+        *active = None;
+    }
+    Ok(())
+}
+
 fn destroy_views<R: Runtime>(app: &AppHandle<R>, service: Option<&str>, keep: &[String]) -> Result<(), String> {
     let state = app.state::<WebviewManager>();
     let keys: Vec<String> = state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
         .keys().filter(|key| service.map_or(true, |s| key.starts_with(&format!("{s}-"))) && !keep.contains(key)).cloned().collect();
-    for key in keys {
-        let label = webview_label(&key);
-        for (popup_label, popup) in app.webview_windows() {
-            if popup_label.starts_with(&format!("{label}-popup-")) { popup.close().map_err(|e| e.to_string())?; }
-        }
-        crate::webview_download_bridge::cancel_for_webview(&app.state::<crate::webview_download_bridge::DownloadState>(), &label);
-        if let Some(webview) = app.get_webview(&label) { webview.close().map_err(|e| e.to_string())?; }
-        state.cached_accounts.lock().map_err(|_| "webview state unavailable")?.remove(&key);
-        state.automation_ports.lock().map_err(|_| "webview state unavailable")?.remove(&key);
-        let mut active = state.active_account_id.lock().map_err(|_| "webview state unavailable")?;
-        if active.as_deref() == Some(key.as_str()) {
-            *active = None;
-            *state.visible.lock().map_err(|_| "webview state unavailable")? = false;
-        }
-    }
+    for key in keys { destroy_view(app, &key)?; }
     Ok(())
 }
 
@@ -602,10 +1066,17 @@ pub fn preload_workspace<R: Runtime>(app: &AppHandle<R>, account_id: String, ser
     open_view(app, account_id, service, 0.0, 0.0, width, height, true)
 }
 
-pub fn close_workspaces<R: Runtime>(app: &AppHandle<R>, service: Option<String>) -> Result<(), String> {
+pub fn close_workspaces<R: Runtime>(app: &AppHandle<R>, service: Option<String>, account_id: Option<String>) -> Result<(), String> {
     if let Some(s) = &service { service_url(s)?; }
+    let target = match account_id {
+        Some(id) => Some(profile_key(service.as_deref().ok_or("service required for profile close")?, &id)?),
+        None => None,
+    };
     cancel_preloads(&app.state::<WebviewManager>())?;
-    destroy_views(app, service.as_deref(), &[])
+    match target {
+        Some(key) => destroy_view(app, &key),
+        None => destroy_views(app, service.as_deref(), &[]),
+    }
 }
 
 fn parse_bookmark_url(service: &str, url: &str) -> Result<tauri::Url, String> {
@@ -617,9 +1088,12 @@ fn parse_bookmark_url(service: &str, url: &str) -> Result<tauri::Url, String> {
         && parsed.password().is_none()
         && match service {
             "flow" => {
-                parsed.host_str() == Some("labs.google")
+                (parsed.host_str() == Some("flow.google.com")
+                    && (parsed.path() == "/" || parsed.path().starts_with("/project/")
+                        || parsed.path().starts_with("/library")))
+                || (parsed.host_str() == Some("labs.google")
                     && (parsed.path() == "/fx/tools/flow"
-                        || parsed.path().starts_with("/fx/tools/flow/"))
+                        || parsed.path().starts_with("/fx/tools/flow/")))
             }
             "chatgpt" => parsed.host_str() == Some("chatgpt.com"),
             _ => false,
@@ -682,8 +1156,8 @@ pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>, service
             cancel_preloads(&state)?;
             if let Some(webview) = app.get_webview(&webview_label(&active_id)) {
                 webview.hide().map_err(|e| e.to_string())?;
+                crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=hidden", webview_label(&active_id)));
             }
-            *state.visible.lock().map_err(|_| "webview state unavailable")? = false;
         }
     }
     drop(operation);
@@ -725,17 +1199,8 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
     let key = profile_key(&service, &account_id)?;
     let accounts = crate::account_store::load_accounts(app.clone())?.unwrap_or(serde_json::Value::Null);
     let storage_key = session_key_from_accounts(&accounts, &service, &account_id)?;
-    let mut affected = vec![key.clone()];
-    if let Some(rows) = accounts.as_array() {
-        for row in rows {
-            let Some(id) = row.get("id").and_then(|v| v.as_str()) else { continue };
-            let service = row.get("service").and_then(|v| v.as_str()).unwrap_or("flow");
-            if session_key_from_accounts(&accounts, service, id)? == storage_key {
-                let linked_key = profile_key(service, id)?;
-                if !affected.contains(&linked_key) { affected.push(linked_key); }
-            }
-        }
-    }
+    let delete_directory = may_delete_session_directory(&accounts, &service, &account_id)?;
+    let affected = vec![key.clone()];
     let state = app.state::<WebviewManager>();
     cancel_preloads(&state)?;
     let _operation = state
@@ -775,13 +1240,10 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
             .map_err(|_| "webview state unavailable")?;
         if active.as_ref().is_some_and(|key| affected.contains(key)) {
             *active = None;
-            *state
-                .visible
-                .lock()
-                .map_err(|_| "webview state unavailable")? = false;
         }
     }
 
+    if !delete_directory { return Ok(true); }
     let profile = profile_path(app, &storage_key)?;
     if !profile.exists() {
         return Ok(true);
@@ -800,8 +1262,59 @@ mod preload_tests {
     use super::{cancel_preloads, parse_bookmark_url, WebviewManager};
 
     #[test]
+    fn cache_promotion_preserves_controller_failure_state() {
+        use super::{cached_view_failed, touch_account};
+        use crate::webview_health::Failure;
+        let state = WebviewManager::default();
+        touch_account(&state, "claude-a").unwrap();
+        let health = state.cached_accounts.lock().unwrap().get("claude-a").unwrap().health.clone();
+        health.record(Failure::Exited);
+        touch_account(&state, "claude-a").unwrap();
+        assert!(cached_view_failed(&state, "claude-a").unwrap());
+        touch_account(&state, "claude-b").unwrap();
+        assert!(!cached_view_failed(&state, "claude-b").unwrap());
+    }
+
+    #[test]
+    fn replacing_a_failed_cache_entry_isolated_from_old_native_callbacks() {
+        use super::{cached_view_failed, touch_account};
+        use crate::webview_health::Failure;
+        let state = WebviewManager::default();
+        touch_account(&state, "claude-a").unwrap();
+        let old_callback = state.cached_accounts.lock().unwrap().get("claude-a").unwrap().health.clone();
+        old_callback.record(Failure::Exited);
+        state.cached_accounts.lock().unwrap().remove("claude-a");
+        touch_account(&state, "claude-a").unwrap();
+        old_callback.record(Failure::Unresponsive);
+        assert!(!cached_view_failed(&state, "claude-a").unwrap());
+    }
+
+    #[test]
+    fn background_cleanup_lease_survives_only_until_the_view_is_reused() {
+        use super::{background_view, background_view_is_current, touch_account};
+        let state = WebviewManager::default();
+        touch_account(&state, "chatgpt-a").unwrap();
+        let batch = background_view(&state, "chatgpt-a".into(), true).unwrap();
+        assert!(background_view_is_current(&state, &batch).unwrap());
+        // Opening the batch-created view transfers it to the user. Switching
+        // away again must not give the old background job ownership back.
+        touch_account(&state, "chatgpt-a").unwrap();
+        touch_account(&state, "claude-b").unwrap();
+        assert!(!background_view_is_current(&state, &batch).unwrap());
+        let borrowed = background_view(&state, "chatgpt-a".into(), false).unwrap();
+        state.cached_accounts.lock().unwrap().remove("chatgpt-a");
+        assert!(!background_view_is_current(&state, &borrowed).unwrap());
+        // A replacement with the same account ID is a different revision.
+        touch_account(&state, "chatgpt-a").unwrap();
+        assert!(!background_view_is_current(&state, &batch).unwrap());
+        assert!(!background_view_is_current(&state, &borrowed).unwrap());
+    }
+
+    #[test]
     fn bookmark_urls_are_limited_to_the_active_service_domain() {
         assert!(parse_bookmark_url("flow", "https://labs.google/fx/tools/flow/project/123").is_ok());
+        assert!(parse_bookmark_url("flow", "https://flow.google.com/project/123").is_ok());
+        assert!(parse_bookmark_url("flow", "https://flow.google.com/about").is_err());
         assert!(parse_bookmark_url("chatgpt", "https://chatgpt.com/c/123").is_ok());
         assert!(parse_bookmark_url("flow", "https://chatgpt.com/c/123").is_err());
         assert!(parse_bookmark_url("chatgpt", "https://labs.google/fx/tools/flow").is_err());

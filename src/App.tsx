@@ -1,14 +1,19 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react"
 import { getVersion } from "@tauri-apps/api/app"
 import { listen } from "@tauri-apps/api/event"
 import { invoke } from "@tauri-apps/api/core"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
-import { neighborIndices, shortcutBounds, readPreloadSides } from "./services/workspace-policy"
+import ProfileSwitcher from "./components/ProfileSwitcher"
+import { workspaceCommand, WorkspaceCommandCancelled } from "./services/workspace-commands"
+import { useDialogFocus } from "./components/useDialogFocus"
+import { neighborIndices, readPreloadSides, rememberWorkspace, forgetWorkspaces, resumableAccount, type WorkspaceMemory, type WorkspaceCloseScope } from "./services/workspace-policy"
 import { loadAccounts, saveAccounts } from "./services/account-store"
+import { generateIndonesianName } from "./services/signup-name"
+import { availableSharedSources, defaultSortDirection, PROFILE_SORT_OPTIONS, readProfileSort, sortProfileCards, type ProfileSort, type ProfileSortKey } from "./services/profile-features"
 
-type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt" | "migoo"
+type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt" | "migoo" | "claude"
 type AppView = "accounts" | "favorites" | "settings" | "flow"
 type BookmarkServiceId = "flow" | "chatgpt"
 type ServiceBookmark = {
@@ -24,15 +29,18 @@ type Account = {
   avatar: string
   favorite: boolean
   order: number
+  addedAt?: number
+  lastOpenedAt?: number
   service?: ServiceId
   flowSessionId?: string
 }
 const SERVICES: Record<ServiceId, { name: string; shortName: string; logo: string; url: string }> = {
-  flow: { name: "Google Flow", shortName: "Flow", logo: "/flow-logo.png", url: "https://labs.google/fx/tools/flow" },
+  flow: { name: "Google Flow", shortName: "Flow", logo: "/flow-logo.png", url: "https://flow.google.com/" },
   dola: { name: "Dola", shortName: "Dola", logo: "/dola-logo.png", url: "https://www.dola.com/" },
   leonardo: { name: "Leonardo AI", shortName: "Leonardo", logo: "/leonardo-logo.png", url: "https://app.leonardo.ai/" },
   chatgpt: { name: "ChatGPT", shortName: "ChatGPT", logo: "/chatgpt-logo.png", url: "https://chatgpt.com/" },
   migoo: { name: "Migoo", shortName: "Migoo", logo: "/migoo-logo.png", url: "https://migoo.ai/home" },
+  claude: { name: "Claude", shortName: "Claude", logo: "/claude-logo.svg", url: "https://claude.ai/" },
 }
 const serviceOf = (account: Account): ServiceId => account.service || "flow"
 const BOOKMARK_STORAGE_KEYS: Record<BookmarkServiceId, string> = {
@@ -51,8 +59,10 @@ const isBookmarkUrl = (service: BookmarkServiceId, value: string) => {
     ) return false
     if (service === "chatgpt") return url.hostname === "chatgpt.com"
     return (
-      url.hostname === "labs.google" &&
-      (url.pathname === "/fx/tools/flow" || url.pathname.startsWith("/fx/tools/flow/"))
+      (url.hostname === "flow.google.com" &&
+        (url.pathname === "/" || url.pathname.startsWith("/project/") || url.pathname.startsWith("/library"))) ||
+      (url.hostname === "labs.google" &&
+        (url.pathname === "/fx/tools/flow" || url.pathname.startsWith("/fx/tools/flow/")))
     )
   } catch {
     return false
@@ -84,7 +94,7 @@ const TELEGRAM_CHANNEL_URL = ""
 
 const bookmarkUrlExample = (service: BookmarkServiceId) =>
   service === "flow"
-    ? "https://labs.google/fx/tools/flow/..."
+    ? "https://flow.google.com/project/..."
     : "https://chatgpt.com/..."
 export default function App() {
   const [downloadNotice, setDownloadNotice] = useState("")
@@ -105,6 +115,13 @@ export default function App() {
   const [preloadSides, setPreloadSides] = useState(readPreloadSides)
   const [settingsTab, setSettingsTab] = useState("general")
   const [activeService, setActiveService] = useState<ServiceId>("flow")
+  const [sortByService, setSortByService] = useState<Record<ServiceId, ProfileSort>>(() =>
+    (Object.keys(SERVICES) as ServiceId[]).reduce((record, service) => {
+      record[service] = readProfileSort(service)
+      return record
+    }, {} as Record<ServiceId, ProfileSort>)
+  )
+  const profileSort = sortByService[activeService]
   const [accountsLoaded, setAccountsLoaded] = useState(false)
   const [accountStorageReady, setAccountStorageReady] = useState(false)
   const [accountStorageError, setAccountStorageError] = useState("")
@@ -124,14 +141,46 @@ export default function App() {
   const [query, setQuery] = useState("")
   const [view, setView] = useState<AppView>("accounts")
   const [active, setActive] = useState<Account | null>(null)
+  const [workspaceMemory, setWorkspaceMemory] = useState<WorkspaceMemory>({})
+  const [workspaceClosing, setWorkspaceClosing] = useState(false)
   const [fullView, setFullView] = useState(false)
   const [dialog, setDialog] = useState<Account | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState("")
+  const deleteLock = useRef(false)
   const [menu, setMenu] = useState<string | null>(null)
   const [cacheNotice, setCacheNotice] = useState("")
+  const [flowScanRunning, setFlowScanRunning] = useState(false)
+  const [flowScanResults, setFlowScanResults] = useState<Record<string, string>>({})
+  const flowScanLock = useRef(false)
   const [clearingCacheId, setClearingCacheId] = useState<string | null>(null)
   const [clearingAllCaches, setClearingAllCaches] = useState(false)
   const [addAccountOpen, setAddAccountOpen] = useState(false)
+  const [bulkShareOpen, setBulkShareOpen] = useState(false)
+  const [bulkShareSelected, setBulkShareSelected] = useState<string[]>([])
+  const [bulkShareRunning, setBulkShareRunning] = useState(false)
+  const [bulkShareService, setBulkShareService] = useState<ServiceId | null>(null)
+  const [bulkShareProgress, setBulkShareProgress] = useState("")
+  const [bulkShareResults, setBulkShareResults] = useState<Record<string, string>>({})
+  const bulkShareStop = useRef(false)
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void listen<{ accountId: string; status: string }>("flowpilot-bulk-login-action", (event) => {
+      if (event.payload.status === "consent_required") {
+        setBulkShareResults((current) => ({
+          ...current,
+          [event.payload.accountId]: "Google approval required — click Continue in the popup",
+        }))
+      }
+    }).then((stop) => {
+      if (disposed) stop()
+      else unlisten = stop
+    }).catch((error) => console.error("Bulk OAuth status listener failed", error))
+    return () => { disposed = true; unlisten?.() }
+  }, [])
   const [newAccountName, setNewAccountName] = useState("")
+  const [googleAccountEmail, setGoogleAccountEmail] = useState("")
   const [flowSessionId, setFlowSessionId] = useState("")
   const [accountNameEdited, setAccountNameEdited] = useState(false)
   const [renamingAccount, setRenamingAccount] = useState<Account | null>(null)
@@ -145,19 +194,31 @@ export default function App() {
   const dragSourceIdRef = useRef<string | null>(null)
   const dragTargetIdRef = useRef<string | null>(null)
   const dragInsertAfterRef = useRef(false)
+  const dialogReturnFocus = useRef<HTMLElement | null>(null)
+  const rememberDialogTrigger = () => {
+    const focused = document.activeElement as HTMLElement | null
+    dialogReturnFocus.current = focused?.closest(".menu-wrap")?.querySelector<HTMLElement>("button.more") || focused
+  }
   const handleRename = (a: Account) => {
+    rememberDialogTrigger()
     setRenamingAccount(a)
     setNewAccountName(a.name)
+    setGoogleAccountEmail(a.email || "")
     setAddAccountError("")
     setAddAccountOpen(true)
     setMenu(null)
   }
   const handleDelete = (a: Account) => {
+    rememberDialogTrigger()
+    setDeleteError("")
     setDialog(a)
     setMenu(null)
   }
   const confirmDelete = async () => {
-    if (!dialog) return
+    if (!dialog || deleteLock.current) return
+    deleteLock.current = true
+    setDeleting(true)
+    setDeleteError("")
     const removing = dialog
     try {
       const profileCleaned = await invoke<boolean>("remove_google_flow_account", {
@@ -170,6 +231,7 @@ export default function App() {
         return
       }
       setAccounts((current) => current.filter((account) => account.id !== removing.id))
+      setWorkspaceMemory((current) => forgetWorkspaces(current, "profile", serviceOf(removing), removing.id))
       if (active?.id === removing.id) {
         setActive(null)
         setFullView(false)
@@ -178,6 +240,10 @@ export default function App() {
       setDialog(null)
     } catch (error) {
       console.error("Unable to remove account", error)
+      setDeleteError("Could not delete this profile. Close its sign-in windows and try again.")
+    } finally {
+      deleteLock.current = false
+      setDeleting(false)
     }
   }
   const handleClearAccountCache = async (a: Account) => {
@@ -217,17 +283,186 @@ export default function App() {
       setClearingAllCaches(false)
     }
   }
+  const checkAllFlowProfiles = async () => {
+    if (flowScanLock.current || !accountStorageReady) return
+    flowScanLock.current = true
+    setFlowScanRunning(true)
+    setActiveService("flow")
+    setView("accounts")
+    setFlowScanResults({})
+    const target = accounts.filter((a) => serviceOf(a) === "flow")
+    try {
+      if (!(await invoke<boolean>("google_relogin_status"))) {
+        setCacheNotice("Enable Google Flow auto re-login in Settings first.")
+        return
+      }
+      for (const account of target) {
+        setFlowScanResults((current) => ({ ...current, [account.id]: "Checking…" }))
+        try {
+          const status = await invoke<string>("check_flow_profile", { accountId: account.id })
+          const label: Record<string, string> = {
+            signed_in: "Signed in",
+            no_previous_session: "Not previously signed in",
+            relogin_unconfirmed: "Re-login attempted · verify manually",
+            google_auth_pending: "Google sign-in pending · skipped",
+            verification_skipped: "Skipped — CAPTCHA or verification required",
+            unknown: "Could not confirm login status",
+          }
+          setFlowScanResults((current) => ({ ...current, [account.id]: label[status] || "Unknown status" }))
+        } catch (error) {
+          setFlowScanResults((current) => ({ ...current, [account.id]: `Check failed: ${String(error)}` }))
+        }
+      }
+      setCacheNotice(`Checked ${target.length} Google Flow profile${target.length === 1 ? "" : "s"}. Review each result below.`)
+    } catch (error) {
+      setCacheNotice(`Could not begin Google Flow check: ${String(error)}`)
+    } finally {
+      flowScanLock.current = false
+      setFlowScanRunning(false)
+    }
+  }
   const handleToggleFavorite = (a: Account) => {
     setAccounts(
       accounts.map((x) => (x.id === a.id ? { ...x, favorite: !x.favorite } : x))
     )
     setMenu(null)
   }
+  const saveProfileSort = (sort: ProfileSort) => {
+    setSortByService((current) => ({ ...current, [activeService]: sort }))
+    try { localStorage.setItem(`flowpilot-sort-${activeService}`, `${sort.key}:${sort.direction}`) }
+    catch { /* optional preference */ }
+    setDragOrderIds(null)
+  }
+  const changeProfileSort = (key: ProfileSortKey) =>
+    saveProfileSort({ key, direction: defaultSortDirection(key) })
+  const reverseProfileSort = () =>
+    saveProfileSort({ ...profileSort, direction: profileSort.direction === "asc" ? "desc" : "asc" })
+  const openBulkShare = () => {
+    rememberDialogTrigger()
+    setBulkShareSelected([])
+    setAddAccountError("")
+    setBulkShareOpen(true)
+    setMenu(null)
+  }
+  const createBulkSharedProfiles = async () => {
+    if (!accountStorageReady || bulkShareRunning || activeService === "flow" || !bulkShareSelected.length) return
+    const eligible = new Set(shareableSources.map((source) => source.id))
+    const sources = accounts.filter((account) => serviceOf(account) === "flow" &&
+      eligible.has(account.id) && bulkShareSelected.includes(account.id))
+    const service = activeService
+    setBulkShareService(service)
+    const target = accounts.filter((account) => serviceOf(account) === service)
+    const linked = new Set(target.map((account) => account.flowSessionId).filter(Boolean))
+    const startOrder = Math.max(-1, ...target.map((account) => account.order)) + 1
+    const now = Date.now()
+    const additions = sources.filter((source) => !linked.has(source.id))
+      .map((source, index): Account => ({
+        id: crypto.randomUUID(),
+        name: source.name.slice(0, 80),
+        email: null,
+        avatarUrl: SERVICES[service].logo,
+        avatar: "NF",
+        favorite: false,
+        order: startOrder + index,
+        addedAt: now + index,
+        service,
+        flowSessionId: source.id,
+      }))
+    if (!additions.length) {
+      setBulkShareOpen(false)
+      return
+    }
+    // Native batch login resolves the linked Flow directory from saved
+    // account metadata; persist that metadata BEFORE opening a service WebView.
+    const nextAccounts = [...accounts, ...additions]
+    setBulkShareRunning(true)
+    setBulkShareProgress("Saving linked profiles…")
+    try {
+      await saveAccounts(nextAccounts)
+    } catch (error) {
+      setAddAccountError(`Could not save shared profiles: ${String(error)}`)
+      setBulkShareRunning(false)
+      setBulkShareProgress("")
+      return
+    }
+    setAccounts(nextAccounts)
+    setBulkShareOpen(false)
+    setBulkShareSelected([])
+    setBulkShareResults({})
+    setBulkShareRunning(true)
+    bulkShareStop.current = false
+    const statusLabels: Record<string, string> = {
+      signed_in: "Signed in",
+      invalid_session: "Invalid Flow session",
+      needs_attention: "Needs attention — open the profile to continue",
+      verification_required: "CAPTCHA required — open the profile to continue",
+      signup_required: "Signup needs attention — open the profile to continue",
+      onboarding_required: "Onboarding needs attention — open the profile to continue",
+      reauth_required: "Service requested sign-in again — open the profile",
+      consent_required: "Google approval pending — popup left open",
+      login_unconfirmed: "Login not confirmed",
+      login_button_not_found: "Google sign-in button not found",
+    }
+    try {
+      for (let index = 0; index < additions.length; index++) {
+        const account = additions[index]
+        if (bulkShareStop.current) {
+          setBulkShareResults((current) => ({ ...current, [account.id]: "Stopped" }))
+          continue
+        }
+        setBulkShareProgress(`${index + 1} / ${additions.length} · ${account.name}`)
+        setBulkShareResults((current) => ({ ...current, [account.id]: "Signing in…" }))
+        try {
+          const status = await invoke<string>("run_bulk_shared_login", {
+            accountId: account.id, service,
+            localName: await generateIndonesianName().catch(() => null),
+          })
+          setBulkShareResults((current) => ({
+            ...current, [account.id]: statusLabels[status] || "Login not confirmed",
+          }))
+        } catch (error) {
+          const invalid = String(error).includes("invalid_flow_session")
+          setBulkShareResults((current) => ({
+            ...current, [account.id]: invalid ? "Invalid Flow session" : `Login failed: ${String(error)}`,
+          }))
+        }
+      }
+    } finally {
+      setBulkShareProgress("")
+      setBulkShareRunning(false)
+      setCacheNotice(`Created ${additions.length} shared ${SERVICES[service].shortName} profiles. Check the sign-in results; Google may require manual consent.`)
+    }
+  }
+  const markProfileOpened = (account: Account) => {
+    const timestamp = Date.now()
+    setAccounts((current) => current.map((item) =>
+      item.id === account.id ? { ...item, lastOpenedAt: timestamp } : item))
+  }
+  const openProfile = (account: Account) => {
+    markProfileOpened(account)
+    setActiveService(serviceOf(account))
+    setActive(account)
+    setView("flow")
+  }
+  const selectService = (service: ServiceId) => {
+    if (workspaceClosing) return
+    setActiveService(service)
+    setQuery("")
+    setMenu(null)
+    const remembered = resumableAccount(accounts, workspaceMemory, service)
+    if (remembered) openProfile(remembered)
+    else {
+      setActive(null)
+      setView("accounts")
+    }
+  }
   const handleAddAccount = () => {
+    rememberDialogTrigger()
     setRenamingAccount(null)
     setFlowSessionId("")
     setAccountNameEdited(false)
     setNewAccountName("")
+    setGoogleAccountEmail("")
     setAddAccountError("")
     setAddAccountOpen(true)
   }
@@ -241,8 +476,16 @@ export default function App() {
       setAddAccountError("Account name must be 80 characters or fewer.")
       return
     }
+    const googleEmail = googleAccountEmail.trim().toLowerCase()
+    if ((renamingAccount ? serviceOf(renamingAccount) : activeService) === "flow" && googleEmail &&
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(googleEmail)) {
+      setAddAccountError("Enter a valid Google email, or leave it blank.")
+      return
+    }
     if (renamingAccount) {
-      setAccounts((current) => current.map((account) => account.id === renamingAccount.id ? { ...account, name } : account))
+      setAccounts((current) => current.map((account) => account.id === renamingAccount.id
+        ? { ...account, name, ...(serviceOf(account) === "flow" ? { email: googleEmail || null } : {}) }
+        : account))
       setAddAccountOpen(false)
       setRenamingAccount(null)
       return
@@ -259,11 +502,13 @@ export default function App() {
     const a: Account = {
       id: crypto.randomUUID(),
       name,
-      email: null,
+      email: activeService === "flow" ? googleEmail || null : null,
       avatarUrl: SERVICES[activeService].logo,
       avatar: "NF",
       favorite: false,
-      order: accounts.length,
+      order: Math.max(-1, ...accounts.filter((account) => serviceOf(account) === activeService)
+        .map((account) => account.order)) + 1,
+      addedAt: Date.now(),
       service: activeService,
       ...(source && activeService !== "flow" ? { flowSessionId: source.id } : {}),
     }
@@ -314,6 +559,17 @@ export default function App() {
     () => accounts.filter((account) => serviceOf(account) === activeService).sort((a, b) => a.order - b.order),
     [accounts, activeService]
   )
+  const workspaceAccounts = useMemo(
+    () => sortProfileCards(serviceAccounts, profileSort),
+    [serviceAccounts, profileSort]
+  )
+  const shareableSources = useMemo(
+    () => availableSharedSources(
+      accounts.filter((account) => serviceOf(account) === "flow"),
+      accounts.filter((account) => serviceOf(account) === activeService)
+    ),
+    [accounts, activeService]
+  )
   const favoriteCount = accounts.filter((a) => a.favorite).length
   const visible = useMemo(
     () =>
@@ -325,10 +581,12 @@ export default function App() {
     [accounts, serviceAccounts, query, view]
   )
   const displayed = useMemo(() => {
-    if (!dragOrderIds || view !== "accounts") return visible
-    const byId = new Map(serviceAccounts.map((account) => [account.id, account]))
-    return dragOrderIds.map((id) => byId.get(id)).filter(Boolean) as Account[]
-  }, [serviceAccounts, dragOrderIds, view, visible])
+    if (dragOrderIds && view === "accounts" && profileSort.key === "manual") {
+      const byId = new Map(visible.map((account) => [account.id, account]))
+      return dragOrderIds.map((id) => byId.get(id)).filter(Boolean) as Account[]
+    }
+    return view === "accounts" ? sortProfileCards(visible, profileSort) : visible
+  }, [dragOrderIds, view, visible, profileSort])
   const finishPointerDrag = (commit: boolean) => {
     const sourceId = dragSourceIdRef.current
     const targetId = dragTargetIdRef.current
@@ -421,7 +679,7 @@ export default function App() {
     }
   }, [accounts, serviceAccounts])
   const beginPointerDrag = (id: string, event: React.PointerEvent<HTMLButtonElement>) => {
-    if (event.button !== 0 || view !== "accounts" || query.trim()) return
+    if (event.button !== 0 || view !== "accounts" || query.trim() || profileSort.key !== "manual") return
     event.preventDefault()
     event.currentTarget.setPointerCapture(event.pointerId)
     dragSourceRef.current = event.currentTarget
@@ -438,8 +696,9 @@ export default function App() {
     const dismiss = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return
       setMenu(null)
-      setDialog(null)
+      if (!deleteLock.current) setDialog(null)
       setAddAccountOpen(false)
+      setBulkShareOpen(false)
     }
     window.addEventListener("keydown", dismiss)
     return () => window.removeEventListener("keydown", dismiss)
@@ -452,40 +711,27 @@ export default function App() {
     document.addEventListener("click", dismiss)
     return () => document.removeEventListener("click", dismiss)
   }, [menu])
-  useEffect(() => {
-    if (!dialog && !addAccountOpen) return
-    const previousFocus = document.activeElement as HTMLElement | null
-    const trapFocus = (event: KeyboardEvent) => {
-      if (event.key !== "Tab") return
-      const controls = document.querySelectorAll<HTMLElement>('.dialog button:not(:disabled), .dialog input:not(:disabled), .dialog select:not(:disabled)')
-      const first = controls[0]
-      const last = controls[controls.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last?.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first?.focus()
-      }
-    }
-    document.addEventListener("keydown", trapFocus)
-    return () => {
-      document.removeEventListener("keydown", trapFocus)
-      if (previousFocus?.isConnected) previousFocus.focus()
-    }
-  }, [dialog, addAccountOpen])
+  useDialogFocus(Boolean(dialog || addAccountOpen || bulkShareOpen), dialogReturnFocus)
   if (view === "flow" && active)
     return (
       <div className={`app ${fullView ? "full" : ""}`}>
-        {!fullView && <Sidebar view="flow" setView={setView} profile={profile} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />}
+        {!fullView && <Sidebar view="flow" setView={setView} accounts={accounts} activeService={activeService} onService={selectService} disabled={workspaceClosing} />}
         <main className="content flow-content">
           <FlowShell
+            key={`${serviceOf(active)}-${active.id}`}
             downloadNotice={downloadNotice}
             onDismissDownload={() => setDownloadNotice("")}
             account={active}
             preloadSides={preloadSides}
-            onClosed={() => { setActive(null); setFullView(false); setView("accounts") }}
-            accounts={serviceAccounts}
+            onOpened={(account) => setWorkspaceMemory((current) => rememberWorkspace(current, serviceOf(account), account.id))}
+            onClosingChange={setWorkspaceClosing}
+            onClosed={(scope) => {
+              setWorkspaceMemory((current) => forgetWorkspaces(current, scope, serviceOf(active), active.id))
+              setActive(null)
+              setFullView(false)
+              setView("accounts")
+            }}
+            accounts={workspaceAccounts}
             bookmarks={
               supportsBookmarks(serviceOf(active))
                 ? bookmarksByService[serviceOf(active) as BookmarkServiceId]
@@ -494,7 +740,10 @@ export default function App() {
             fullView={fullView}
             onToggleFullView={() => setFullView((current) => !current)}
             onSelectAccount={(account) => {
-              if (account.id !== active.id) setActive(account)
+              if (account.id !== active.id) {
+                markProfileOpened(account)
+                setActive(account)
+              }
             }}
             onSaveBookmark={(id, name, url) => {
               const bookmarkService = serviceOf(active)
@@ -529,9 +778,13 @@ export default function App() {
               }))
             }}
             onBack={() => {
-              void invoke("close_google_flow", { accountId: active.id, service: serviceOf(active) })
               setFullView(false)
               setView("accounts")
+            }}
+            onAddAccount={() => {
+              setFullView(false)
+              setView("accounts")
+              handleAddAccount()
             }}
           />
         </main>
@@ -539,45 +792,37 @@ export default function App() {
     )
   return (
     <div className="app">
-      <Sidebar view={view} setView={setView} profile={profile} accounts={accounts} activeService={activeService} onService={(service) => { setActiveService(service); setQuery(""); setMenu(null); setView("accounts") }} />
-      <main className={`content ${view === "accounts" || view === "favorites" ? "accounts-page" : ""}`}>
+      <Sidebar view={view} setView={setView} accounts={accounts} activeService={activeService} onService={selectService} />
+      <main className={`content ${view === "accounts" || view === "favorites" ? "accounts-page" : "settings-page"}`}>
         <DownloadNotice message={downloadNotice} onDismiss={() => setDownloadNotice("")} />
         <header>
-          <div>
-            <div className="eyebrow page-eyebrow" aria-hidden="true">
-              FLOWPILOT /{" "}
-              {view === "settings"
-                ? "SETTINGS"
-                : view === "favorites"
-                ? "FAVORITES"
-                : view.toUpperCase()}
-            </div>
-            <h1>
-              {view === "settings"
-                ? "Settings"
-                : view === "favorites"
-                ? "Favorite Accounts"
-                : SERVICES[activeService].name}
-            </h1>
-            <p>
-              {view === "settings"
-                ? "Keep Flowpilot personal, private, and ready to use."
-                : view === "favorites"
-                ? "Your favorite accounts across all services."
-                : `Manage your ${SERVICES[activeService].name} accounts in one place.`}
-            </p>
-            {view === "accounts" && (
-              <div className="account-count">
-                {serviceAccounts.length}{" "}
-                {serviceAccounts.length === 1 ? "profile" : "profiles"} in {SERVICES[activeService].name}
-              </div>
-            )}
-            {view === "favorites" && (
-              <div className="account-count">{favoriteCount} Favorites</div>
-            )}
-          </div>
+          <h1 className={view === "accounts" ? "sr-only" : undefined}>{view === "settings" ? "Settings" : view === "favorites" ? "Favorite Accounts" : SERVICES[activeService].name}</h1>
           {(view === "accounts" || view === "favorites") && (
             <div className="header-actions">
+              {view === "accounts" && activeService === "flow" && (
+                <button className="secondary" disabled={!accountStorageReady || flowScanRunning || serviceAccounts.length === 0}
+                  onClick={() => void checkAllFlowProfiles()}>
+                  {flowScanRunning ? "Checking Flow profiles…" : "Check & Re-login All"}
+                </button>
+              )}
+              {view === "accounts" && activeService !== "flow" && (
+                <button className="secondary" disabled={!accountStorageReady || bulkShareRunning || shareableSources.length === 0}
+                  onClick={openBulkShare}>Bulk Add Profile</button>
+              )}
+              {view === "accounts" && <button className="primary" disabled={!accountStorageReady || flowScanRunning || bulkShareRunning} onClick={handleAddAccount}>
+                + Add account
+              </button>}
+            </div>
+          )}
+        </header>
+        {view === "accounts" && (
+          <ProfileSwitcher accounts={workspaceAccounts} activeId={workspaceMemory[activeService]} onSelect={openProfile} />
+        )}
+        <section className={view === "settings" ? "settings-sheet" : "accounts-sheet"}>
+        {view !== "settings" && (
+          <div className="profiles-heading">
+            <div className="profiles-title"><h2>Profiles</h2><span>{view === "favorites" ? favoriteCount : serviceAccounts.length}</span></div>
+            <div className="profile-list-controls">
               <div className="search">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg>
                 <input
@@ -587,18 +832,61 @@ export default function App() {
                   placeholder="Search accounts..."
                 />
               </div>
-              {view === "accounts" && <button className="primary" disabled={!accountStorageReady} onClick={handleAddAccount}>
-                + Add account
-              </button>}
+              {view === "accounts" && (
+                <div className="profile-sort-controls">
+                  <label className="profile-sort-wrap">
+                    <span>Sort</span>
+                    <select aria-label="Sort profiles" className="profile-sort" value={profileSort.key}
+                      onChange={(event) => changeProfileSort(event.target.value as ProfileSortKey)}>
+                      {PROFILE_SORT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {profileSort.key !== "manual" && (
+                    <button type="button" className="secondary profile-sort-direction" onClick={reverseProfileSort}
+                      aria-label={profileSort.direction === "asc" ? "Sort ascending. Switch to descending" : "Sort descending. Switch to ascending"}
+                      title={profileSort.direction === "asc" ? "Ascending · click for descending" : "Descending · click for ascending"}>
+                      {profileSort.direction === "asc" ? "↑" : "↓"}
+                    </button>
+                  )}
+                </div>
+              )}
+
             </div>
-          )}
-        </header>
+          </div>
+        )}
         {accountStorageError && <div className="cache-status" role="alert">{accountStorageError}</div>}
         {cacheNotice && (
           <div className="cache-status" role="status">
             <span>{cacheNotice}</span>
             <button type="button" aria-label="Dismiss cache status" onClick={() => setCacheNotice("")}>×</button>
           </div>
+        )}
+        {view === "accounts" && activeService === bulkShareService && (bulkShareRunning || Object.keys(bulkShareResults).length > 0) && (
+          <section className="cache-status bulk-login-report" role="status" aria-label="Bulk shared Google sign-in results">
+            <div>
+              <strong>Bulk Google sign-in {bulkShareRunning ? `· ${bulkShareProgress}` : "· completed"}</strong>
+              <ul>
+                {accounts.filter((a) => serviceOf(a) === activeService && bulkShareResults[a.id]).map((a) => (
+                  <li key={a.id}>{a.name}: {bulkShareResults[a.id]}</li>
+                ))}
+              </ul>
+            </div>
+            {bulkShareRunning && <button type="button" onClick={() => { bulkShareStop.current = true }}>
+              Stop after current profile
+            </button>}
+          </section>
+        )}
+        {view === "accounts" && activeService === "flow" && Object.keys(flowScanResults).length > 0 && (
+          <section className="cache-status" role="status" aria-label="Google Flow profile check results">
+            <strong>Google Flow session check</strong>
+            <ul>
+              {serviceAccounts.filter((a) => flowScanResults[a.id]).map((a) => (
+                <li key={a.id}>{a.name}: {flowScanResults[a.id]}</li>
+              ))}
+            </ul>
+          </section>
         )}
         {view === "settings" ? (
           <>
@@ -607,6 +895,8 @@ export default function App() {
           </nav>
           {settingsTab === "general" ? <>
           <DownloadSettings />
+          <GoogleReLoginSettings onEnabled={() => void checkAllFlowProfiles()} />
+          <NameGeneratorSettings />
           <section className="preload-setting">
             <div><h2>Account preload</h2><p>Keep up to this many accounts ready on each side of the current profile, per service. More accounts use more memory.</p></div>
             <label htmlFor="preload-sides">Accounts per side</label>
@@ -626,31 +916,30 @@ export default function App() {
           </>
         ) : (
           <>
-            {!accountsLoaded && <p className="account-empty" role="status">Loading accounts...</p>}
+            {!accountsLoaded && <p className="account-empty" role="status">Loading saved profiles…</p>}
             {accountsLoaded && accountStorageReady && displayed.length === 0 && (
               <div className="account-empty" role="status">
                 <h2>{query ? "No matching accounts" : view === "favorites" ? "No favorites yet" : `No ${SERVICES[activeService].shortName} accounts yet`}</h2>
                 <p>{query ? "Try a different profile name." : view === "favorites" ? "Mark an account as a favorite to find it here." : "Add an account to create your first profile for this service."}</p>
               </div>
             )}
+            <div className="profiles-scroll-region">
             <div className="grid">
               {displayed.map((a) => (
                 <Card
                   key={a.id}
                   a={a}
+                  resumable={workspaceMemory[serviceOf(a)] === a.id}
+                  sessionSource={accounts.find((source) => source.id === a.flowSessionId)?.name}
                   menuOpen={menu === a.id}
                   onMenu={() => setMenu(menu === a.id ? null : a.id)}
-                  onOpen={() => {
-                    setActiveService(serviceOf(a))
-                    setActive(a)
-                    setView("flow")
-                  }}
+                  onOpen={() => openProfile(a)}
                   onFavorite={() => handleToggleFavorite(a)}
                   onDelete={() => handleDelete(a)}
                   onRename={() => handleRename(a)}
                   onClearCache={() => void handleClearAccountCache(a)}
                   cacheBusy={clearingCacheId === a.id || clearingAllCaches}
-                  dragEnabled={view === "accounts" && !query.trim()}
+                  dragEnabled={view === "accounts" && profileSort.key === "manual" && !query.trim()}
                   isDragging={draggingId === a.id}
                   dropPosition={
                     dragTargetId === a.id
@@ -662,27 +951,71 @@ export default function App() {
               ))}
 
             </div>
+            </div>
           </>
         )}
+        </section>
         {dialog && (
           <div className="overlay">
             <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title">
               <h2 id="delete-title">Delete {dialog.name}?</h2>
               <p>
-                This deletes this local profile, including its cookies and saved login. It does not delete your account with the service.
+                This removes this profile from Flowpilot. Browser data is deleted only when this profile owns the session folder and no other profile uses it. It does not delete your account with the service.
               </p>
               {accounts.some((a) => a.id !== dialog.id && (a.flowSessionId || (serviceOf(a) === "flow" ? a.id : null)) === (dialog.flowSessionId || (serviceOf(dialog) === "flow" ? dialog.id : ""))) && (
-                <p className="dialog-error">This session is also used by {accounts.filter((a) => a.id !== dialog.id && (a.flowSessionId || (serviceOf(a) === "flow" ? a.id : null)) === (dialog.flowSessionId || (serviceOf(dialog) === "flow" ? dialog.id : ""))).map((a) => `${SERVICES[serviceOf(a)].shortName}: ${a.name}`).join(", ")}. Deleting it clears their local logins too.</p>
+                <p className="session-note">This session is also used by {accounts.filter((a) => a.id !== dialog.id && (a.flowSessionId || (serviceOf(a) === "flow" ? a.id : null)) === (dialog.flowSessionId || (serviceOf(dialog) === "flow" ? dialog.id : ""))).map((a) => `${SERVICES[serviceOf(a)].shortName}: ${a.name}`).join(", ")}. Their browser data and saved logins will be kept.</p>
               )}
+              {dialog.flowSessionId && <p className="session-note">The borrowed Flow session will be kept, including this platform's login stored in that shared session.</p>}
+              {deleteError && <p className="dialog-error" role="alert">{deleteError}</p>}
               <div className="dialog-actions">
-                <button autoFocus className="secondary" onClick={() => setDialog(null)}>
+                <button autoFocus className="secondary" disabled={deleting} onClick={() => setDialog(null)}>
                   Cancel
                 </button>
                 <button
                   className="danger"
+                  disabled={deleting}
                   onClick={() => void confirmDelete()}
                 >
-                  Delete account
+                  {deleting ? "Deleting…" : "Delete account"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {bulkShareOpen && activeService !== "flow" && (
+          <div className="overlay">
+            <div className="dialog bulk-share-dialog" role="dialog" aria-modal="true" aria-labelledby="bulk-share-title">
+              <h2 id="bulk-share-title">Bulk Add Profile · {SERVICES[activeService].name}</h2>
+              <p>Select existing Google Flow profiles. Each source creates one linked{" "}
+                {SERVICES[activeService].shortName} profile without copying or deleting login data.</p>
+              <div className="bulk-share-actions">
+                <button className="secondary" type="button" onClick={() => setBulkShareSelected(shareableSources.map((a) => a.id))}>Select all</button>
+                <button className="secondary" type="button" onClick={() => setBulkShareSelected([])}>Clear</button>
+                <span>{bulkShareSelected.length} selected / {shareableSources.length} available</span>
+              </div>
+              <div className="bulk-share-source-list" role="group" aria-label="Google Flow source profiles">
+                {shareableSources.length === 0 ? <p>No unlinked Flow profiles available for this service.</p> :
+                  shareableSources.map((source) => (
+                    <label key={source.id} className="bulk-share-source">
+                      <input type="checkbox" checked={bulkShareSelected.includes(source.id)}
+                        onChange={(event) => setBulkShareSelected((current) =>
+                          event.target.checked
+                            ? [...current, source.id]
+                            : current.filter((id) => id !== source.id)
+                        )} />
+                      <span>{source.name}</span>
+                    </label>
+                  ))}
+              </div>
+              <p className="session-note">Existing links are excluded. After adding, Flowpilot automatically
+                opens each service, selects Google sign-in, and checks the result using its shared Flow session.
+                No fresh Google password login is attempted.</p>
+              {addAccountError && <p className="dialog-error" role="alert">{addAccountError}</p>}
+              <div className="dialog-actions">
+                <button className="secondary" onClick={() => setBulkShareOpen(false)}>Cancel</button>
+                <button className="primary" disabled={!bulkShareSelected.length || bulkShareRunning}
+                  onClick={() => void createBulkSharedProfiles()}>
+                  {bulkShareRunning ? "Saving…" : `Add & sign in ${bulkShareSelected.length} profiles`}
                 </button>
               </div>
             </div>
@@ -706,12 +1039,14 @@ export default function App() {
                     <option value="">Normal login · Separate profile</option>
                     {accounts.filter((a) => serviceOf(a) === "flow").map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
-                  {flowSessionId && <p className="session-note">Open the account, then choose Continue with Google. This shares the selected Flow profile's sessions; deleting either profile clears the shared local logins.</p>}
+                  {flowSessionId && <p className="session-note">Open the account, then choose Continue with Google. This uses the selected Flow profile's browser session. Removing a linked profile keeps the source session and saved logins.</p>}
                 </>
               )}
               <label className="field-label" htmlFor="account-name">Profile name</label>
               <input
                 id="account-name"
+                aria-invalid={Boolean(addAccountError)}
+                aria-describedby={addAccountError ? "account-error" : undefined}
                 autoFocus
                 value={newAccountName}
                 onChange={(event) => {
@@ -725,7 +1060,16 @@ export default function App() {
                 placeholder="Enter account name"
                 maxLength={80}
               />
-              {addAccountError && <p className="dialog-error">{addAccountError}</p>}
+              {(renamingAccount ? serviceOf(renamingAccount) : activeService) === "flow" && (
+                 <>
+                   <label className="field-label" htmlFor="google-account-email">Google email (optional)</label>
+                   <input id="google-account-email" type="email" value={googleAccountEmail}
+                     onChange={(event) => setGoogleAccountEmail(event.target.value)}
+                     placeholder="email@gmail.com" maxLength={254} />
+                   <p className="session-note">For matching an already-recognized account when Google shows multiple identities. If blank, auto re-login chooses only when exactly one is shown.</p>
+                 </>
+               )}
+               {addAccountError && <p id="account-error" className="dialog-error" role="alert">{addAccountError}</p>}
               <div className="dialog-actions">
                 <button className="secondary" onClick={() => setAddAccountOpen(false)}>
                   Cancel
@@ -752,56 +1096,42 @@ function Brand() {
 function Sidebar({
   view,
   setView,
-  profile,
-  accounts, activeService, onService,
+  accounts, activeService, onService, disabled = false,
 }: {
   accounts: Account[]
   activeService: ServiceId
   onService: (service: ServiceId) => void
+  disabled?: boolean
   view: AppView
   setView: (view: AppView) => void
-  profile: { name: string; avatar: string | null }
 }) {
   return (
     <aside>
       <Brand />
-      <div className="side-label">WORKSPACE</div>
+      <div className="side-label">Workspace</div>
       {(Object.keys(SERVICES) as ServiceId[]).map((id) => <button key={id}
         className={(view === "accounts" || view === "flow") && activeService === id ? "active" : ""}
         aria-current={(view === "accounts" || view === "flow") && activeService === id ? "page" : undefined}
-        title={SERVICES[id].name} onClick={() => onService(id)}>
+        disabled={disabled} title={SERVICES[id].name} onClick={() => onService(id)}>
         <img className="sidebar-service-logo" src={SERVICES[id].logo} alt="" />
         <span>{SERVICES[id].shortName}</span><b className="service-count">{accounts.filter((a) => serviceOf(a) === id).length}</b>
       </button>)}
-      <button className={view === "favorites" ? "active" : ""} title="Favorites" onClick={() => setView("favorites")}>
+      <button disabled={disabled} className={view === "favorites" ? "active" : ""} title="Favorites" onClick={() => setView("favorites")}>
         <SidebarIcon name="favorites" /><span>Favorites</span>
       </button>
       <div className="sidebar-spacer" />
-      <button className={view === "settings" ? "active" : ""} title="Settings" onClick={() => setView("settings")}>
+      <button disabled={disabled} className={view === "settings" ? "active" : ""} title="Settings" onClick={() => setView("settings")}>
         <SidebarIcon name="settings" /><span>Settings</span>
       </button>
       <div className="side-bottom">
-        <div className="avatar">
-          {profile.avatar ? (
-            <img src={profile.avatar} alt="Flowpilot profile" />
-          ) : (
-            profile.name.slice(0, 2).toUpperCase()
-          )}
-        </div>
-        <div>
-          <div className="side-license-info"><small><span>OPEN SOURCE · {profile.name}</span></small></div>
-        </div>
+        <img className="owner-avatar" src="/kuntyy-profile.svg" alt="" aria-hidden="true" />
+        <span className="owner-label">I'M Kuntyy</span>
       </div>
     </aside>
   )
 }
 function SidebarIcon({ name }: { name: "favorites" | "settings" }) {
-  const common = { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true }
-  const paths = {
-    favorites: <path d="m12 4 2.5 5.1 5.6.8-4 4 1 5.6-5.1-2.7-5.1 2.7 1-5.6-4-4 5.6-.8L12 4Z" />,
-    settings: <><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="9" cy="6" r="1.8" fill="currentColor" stroke="none" /><circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none" /><circle cx="9" cy="18" r="1.8" fill="currentColor" stroke="none" /></>,
-  }
-  return <svg className="sidebar-icon" {...common}>{paths[name]}</svg>
+  return <img className="sidebar-icon" src={`/icons/${name === "favorites" ? "star-nav" : "settings"}.svg`} width="18" height="18" alt="" />
 }
 function UpdatesPage() {
   type UpdatePhase = "checking" | "upToDate" | "available" | "downloading" | "installing" | "relaunching" | "error"
@@ -950,28 +1280,21 @@ function InfoPage() {
           <span className="badge">LOCAL ACCOUNT DATA</span>
         </div>
         <div className="privacy-row">
-          <span>🔒</span>
+
           <div>
             <h3>Google Login Stays in Google Flow</h3>
-            <p>
-              Your Google account login is handled directly inside Google Flow.
-              Flowpilot does not ask you to enter your Google password into
-              Flowpilot.
-            </p>
+            <p>Sign in directly with Google inside the service. Optional Flow re-login uses the shared password you enable in Settings.</p>
           </div>
         </div>
         <div className="privacy-row">
-          <span>🔑</span>
+
           <div>
-            <h3>No Password Storage</h3>
-            <p>
-              Flowpilot does not store your Google password or ask you to
-              provide it to the application.
-            </p>
+            <h3>Optional re-login credentials</h3>
+            <p>If you enable auto re-login, its shared password is stored in Windows Credential Manager, separately from account metadata. Disable re-login in Settings to remove it.</p>
           </div>
         </div>
         <div className="privacy-row">
-          <span>💻</span>
+
           <div>
             <h3>Local Account Management</h3>
             <p>
@@ -981,7 +1304,7 @@ function InfoPage() {
           </div>
         </div>
         <div className="privacy-row">
-          <span>🛡️</span>
+
           <div>
             <h3>No Unnecessary Account Data Collection</h3>
             <p>
@@ -992,22 +1315,15 @@ function InfoPage() {
           </div>
         </div>
       </section>
-      <section className="info-card telegram-card">
-        <h2>Need help or want the latest updates?</h2>
-        <p>
-          Follow the Flowpilot Telegram channel for announcements, guides, and
-          product updates.
-        </p>
-        <button className="secondary" disabled={!TELEGRAM_CHANNEL_URL}>
-          Join Telegram Channel
-        </button>
-      </section>
+
     </div>
   )
 }
 
 function Card({
   a,
+  resumable,
+  sessionSource,
   menuOpen,
   onMenu,
   onOpen,
@@ -1022,6 +1338,8 @@ function Card({
   onPointerDown,
 }: {
   a: Account
+  resumable: boolean
+  sessionSource?: string
   menuOpen: boolean
   onMenu: () => void
   onOpen: () => void
@@ -1036,12 +1354,34 @@ function Card({
   onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void
 }) {
   const service = SERVICES[serviceOf(a)]
+  const menuButtonRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 })
+  useLayoutEffect(() => {
+    if (!menuOpen) return
+    const placeMenu = () => {
+      const anchor = menuButtonRef.current?.getBoundingClientRect()
+      const menu = menuRef.current
+      if (!anchor || !menu) return
+      const below = anchor.bottom + 4
+      setMenuPosition({
+        top: Math.max(8, below + menu.offsetHeight <= window.innerHeight - 8 ? below : anchor.top - menu.offsetHeight - 4),
+        left: Math.max(8, Math.min(window.innerWidth - menu.offsetWidth - 8, anchor.right - menu.offsetWidth)),
+      })
+    }
+    placeMenu()
+    window.addEventListener("resize", placeMenu)
+    window.addEventListener("scroll", placeMenu, true)
+    return () => {
+      window.removeEventListener("resize", placeMenu)
+      window.removeEventListener("scroll", placeMenu, true)
+    }
+  }, [menuOpen])
   return (
     <article
       data-account-id={a.id}
-      className={`card ${isDragging ? "is-dragging" : ""} ${dropPosition ? `is-drop-${dropPosition}` : ""}`}
+      className={`card ${resumable ? "is-resumable" : ""} ${isDragging ? "is-dragging" : ""} ${dropPosition ? `is-drop-${dropPosition}` : ""}`}
     >
-      <div className="card-top">
         <button
           type="button"
           className="drag-handle"
@@ -1050,8 +1390,9 @@ function Card({
           aria-label={`Reorder ${a.name}`}
           title={dragEnabled ? "Drag to reorder" : undefined}
         >
-          <span aria-hidden="true">⠿</span>
+          <img src="/icons/grip.svg" width="16" height="16" alt="" />
         </button>
+      <div className="card-top">
         <div className="card-actions">
           <button
             className={`star ${a.favorite ? "fav" : ""}`}
@@ -1059,14 +1400,14 @@ function Card({
             aria-label={a.favorite ? "Remove from favorites" : "Add to favorites"}
             aria-pressed={a.favorite}
           >
-            {a.favorite ? "★" : "☆"}
+            {a.favorite ? "★" : <img src="/icons/star.svg" width="16" height="16" alt="" />}
           </button>
           <div className="menu-wrap">
-            <button className="more" onClick={onMenu} aria-label={`Options for ${a.name}`} aria-expanded={menuOpen}>
-              •••
+            <button ref={menuButtonRef} className="more" onClick={onMenu} aria-label={`Options for ${a.name}`} aria-expanded={menuOpen}>
+              <img src="/icons/more.svg" width="16" height="16" alt="" />
             </button>
             {menuOpen && (
-              <div className="account-menu">
+              <div ref={menuRef} className="account-menu" style={menuPosition}>
                 <button onClick={onRename}>Rename</button>
                 <button onClick={onFavorite}>
                   {a.favorite ? "Remove from Favorites" : "Add to Favorites"}
@@ -1091,10 +1432,10 @@ function Card({
             draggable={false}
           />
         </div>
-        <div className="account-name"><h2 title={a.name}>{a.name}</h2><p>{service.name}</p></div>
+        <div className="account-name"><h2 title={a.name}>{a.name}</h2><p>{a.flowSessionId ? <><img src={SERVICES.flow.logo} width="12" height="12" alt="" />Flow session · {sessionSource || "Source profile not in list"}</> : service.name}</p></div>
       </div>
       <button className="primary wide" onClick={onOpen}>
-        Open {service.shortName}
+        {resumable ? "Resume" : `Open ${service.shortName}`}
       </button>
     </article>
   )
@@ -1112,6 +1453,8 @@ function Settings({
   clearingAllCaches: boolean
   onClearAllCaches: () => void
 }) {
+  const [version, setVersion] = useState(APP_VERSION)
+  useEffect(() => { void getVersion().then(setVersion).catch(() => {}) }, [])
   return (
     <div className="settings">
       <section>
@@ -1159,8 +1502,8 @@ function Settings({
           <div className="eyebrow">PRIVACY & SECURITY</div>
           <h2>Your data stays local</h2>
           <p>
-            Flowpilot stores account metadata on this device. Google passwords
-            and credentials are never captured.
+            Flowpilot stores account metadata locally. Google re-login is optional;
+            its shared password is saved in Windows Credential Manager, not in account files.
           </p>
         </div>
         <span className="badge">LOCAL ONLY</span>
@@ -1187,12 +1530,155 @@ function Settings({
         <div>
           <div className="eyebrow">ABOUT</div>
           <h2>
-            Flowpilot <span className="muted">{APP_VERSION}</span>
+            Flowpilot <span className="muted">{version}</span>
           </h2>
           <p>Multi-service desktop workspace and account manager.</p>
         </div>
       </section>
     </div>
+  )
+}
+function GoogleReLoginSettings({ onEnabled }: { onEnabled: () => void }) {
+  const [enabled, setEnabled] = useState(false)
+  const [password, setPassword] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState("")
+  useEffect(() => {
+    let active = true
+    void invoke<boolean>("google_relogin_status").then((value) => {
+      if (active) setEnabled(value)
+    }).catch((error) => {
+      if (active) setMessage(`Credential Manager unavailable: ${String(error)}`)
+    })
+    return () => { active = false }
+  }, [])
+  const save = async () => {
+    if (!password) return
+    setBusy(true)
+    setMessage("")
+    try {
+      await invoke("google_relogin_save_password", { password })
+      setEnabled(true)
+      setPassword("")
+      setMessage("Google Flow re-login is enabled. Checking existing profiles…")
+      onEnabled()
+    } catch (error) {
+      setMessage(`Could not save password: ${String(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+  const disable = async () => {
+    setBusy(true)
+    setMessage("")
+    try {
+      await invoke("google_relogin_disable")
+      setEnabled(false)
+      setPassword("")
+      setMessage("Google Flow re-login is disabled.")
+    } catch (error) {
+      setMessage(`Could not disable re-login: ${String(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <section className="preload-setting">
+      <div>
+        <h2>Google Flow auto re-login</h2>
+        <p>After saving, Flowpilot checks your existing Flow profiles. You can also run Check &amp; Re-login All from the Flow account list. Fresh login and additional verification are not automated. The password is shared across Flow profiles and stored in Windows Credential Manager.</p>
+        <p>Status: <strong>{enabled ? "Enabled" : "Disabled"}</strong></p>
+      </div>
+      <label htmlFor="google-relogin-password">Shared Google password</label>
+      <input id="google-relogin-password" type="password" autoComplete="new-password"
+        value={password} disabled={busy} maxLength={1024}
+        onChange={(event) => setPassword(event.target.value)}
+        placeholder={enabled ? "Enter new password to replace saved one" : "Enter password to enable"} />
+      <div className="dialog-actions">
+        <button className="primary" disabled={busy || !password} onClick={() => void save()}>
+          {enabled ? "Replace password" : "Enable re-login"}
+        </button>
+        {enabled && <button className="secondary" disabled={busy} onClick={() => void disable()}>
+          Disable re-login
+        </button>}
+      </div>
+      {message && <p role="status">{message}</p>}
+    </section>
+  )
+}
+function NameGeneratorSettings() {
+  const [enabled, setEnabled] = useState(false)
+  const [apiKey, setApiKey] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState("")
+  useEffect(() => {
+    let active = true
+    void invoke<boolean>("name_generator_status").then((value) => {
+      if (active) setEnabled(value)
+    }).catch(() => {
+      if (active) setMessage("Could not read the saved API key setting.")
+    })
+    return () => { active = false }
+  }, [])
+  const save = async () => {
+    setBusy(true)
+    setMessage("")
+    try {
+      await invoke("name_generator_save_key", { apiKey })
+      setEnabled(true)
+      setApiKey("")
+      setMessage("API key saved. Signup adapters will use the shared name generator.")
+    } catch {
+      setMessage("Could not save API key. Check Windows Credential Manager and try again.")
+    } finally { setBusy(false) }
+  }
+  const disable = async () => {
+    setBusy(true)
+    setMessage("")
+    try {
+      await invoke("name_generator_disable")
+      setEnabled(false)
+      setApiKey("")
+      setMessage("Name generator disabled and its saved API key removed.")
+    } catch {
+      setMessage("Could not remove the saved API key.")
+    } finally { setBusy(false) }
+  }
+  const useLocalNames = async () => {
+    setBusy(true)
+    setMessage("")
+    try {
+      await invoke("name_generator_save_key", { apiKey: "__FLOWPILOT_LOCAL_NAMES__" })
+      setEnabled(true)
+      setApiKey("")
+      setMessage("Local Indonesian names enabled. No API connection is required.")
+    } catch {
+      setMessage("Could not save the name generator setting.")
+    } finally { setBusy(false) }
+  }
+  return (
+    <section className="preload-setting">
+      <div>
+        <h2>Indonesian signup names</h2>
+        <p>Generate Indonesian display names offline with Faker, or use Behind the Name with your own API key. If the API fails, Faker is used. Existing accounts keep their names.</p>
+        <p>The generator is shared across services. ChatGPT signup is connected today; other services need their own signup adapter. ChatGPT age defaults to 27 when empty.</p>
+        <p>Optional API keys are stored in Windows Credential Manager and sent only to Behind the Name.</p>
+        <p>Status: <strong>{enabled ? "Enabled" : "Disabled"}</strong></p>
+      </div>
+      <label htmlFor="behind-the-name-key">Behind the Name API key</label>
+      <input id="behind-the-name-key" type="password" autoComplete="new-password"
+        value={apiKey} disabled={busy} maxLength={512}
+        onChange={(event) => setApiKey(event.target.value)}
+        placeholder="Optional API key" />
+      <div className="dialog-actions">
+        <button className="secondary" disabled={busy} onClick={() => void useLocalNames()}>Use local names</button>
+        <button className="primary" disabled={busy || !apiKey.trim()} onClick={() => void save()}>
+          Save API key
+        </button>
+        {enabled && <button className="secondary" disabled={busy} onClick={() => void disable()}>Disable</button>}
+      </div>
+      {message && <p role="status">{message}</p>}
+    </section>
   )
 }
 function DownloadSettings() {
@@ -1243,7 +1729,7 @@ function DownloadNotice({ message, onDismiss }: { message: string; onDismiss: ()
 
 function FlowShell({
   downloadNotice, onDismissDownload,
-  preloadSides, onClosed,
+  preloadSides, onClosed, onOpened, onClosingChange,
   account,
   accounts,
   bookmarks,
@@ -1253,11 +1739,14 @@ function FlowShell({
   onSaveBookmark,
   onDeleteBookmark,
   onBack,
+  onAddAccount,
 }: {
   downloadNotice: string
   onDismissDownload: () => void
   preloadSides: number
-  onClosed: () => void
+  onClosed: (scope: WorkspaceCloseScope) => void
+  onOpened: (account: Account) => void
+  onClosingChange: (closing: boolean) => void
   account: Account
   accounts: Account[]
   bookmarks: ServiceBookmark[]
@@ -1267,6 +1756,7 @@ function FlowShell({
   onSaveBookmark: (id: string | null, name: string, url: string) => string | null
   onDeleteBookmark: (id: string) => void
   onBack: () => void
+  onAddAccount: () => void
 }) {
   const serviceId = serviceOf(account)
   const service = SERVICES[serviceId]
@@ -1279,29 +1769,14 @@ function FlowShell({
   const [bookmarkError, setBookmarkError] = useState("")
   const [editingBookmarkId, setEditingBookmarkId] = useState<string | null>(null)
   const [bookmarkMenu, setBookmarkMenu] = useState<{ id: string; left: number; top: number } | null>(null)
-  const shortcutListRef = useRef<HTMLDivElement>(null)
-  const revealShortcuts = useRef<"before" | "after" | null>(null)
-  const [moreBefore, setMoreBefore] = useState(0)
-  const [moreAfter, setMoreAfter] = useState(0)
-  useEffect(() => {
-    const list = shortcutListRef.current
-    if (!list) return
-    if (revealShortcuts.current) {
-      list.scrollLeft = revealShortcuts.current === "before" ? 0 : list.scrollWidth
-      revealShortcuts.current = null
-    } else {
-      const selected = list.querySelector<HTMLElement>("[aria-current]")
-      if (selected) {
-        const left = selected.offsetLeft - list.offsetLeft
-        if (left < list.scrollLeft) list.scrollLeft = left
-        else if (left + selected.offsetWidth > list.scrollLeft + list.clientWidth) list.scrollLeft = left + selected.offsetWidth - list.clientWidth
-      }
-    }
-  }, [account.id, moreBefore, moreAfter])
   const [closing, setClosing] = useState(false)
   const stopped = useRef(false)
+  const workspaceVersion = useRef(0)
+  const currentWorkspace = () => {
+    const version = workspaceVersion.current
+    return () => !stopped.current && workspaceVersion.current === version
+  }
   const currentIndex = accounts.findIndex((candidate) => candidate.id === account.id)
-  const [shortcutStart, shortcutEnd] = shortcutBounds(accounts.length, currentIndex, moreBefore, moreAfter)
   const neighborIds = neighborIndices(accounts.length, currentIndex, preloadSides).map((index) => accounts[index].id)
   const neighborKey = neighborIds.join(",")
   const containerRef = useRef<HTMLDivElement>(null)
@@ -1316,11 +1791,13 @@ function FlowShell({
     setBookmarkMenu(null)
     clearBookmarkForm()
     let cancelled = false
+    workspaceVersion.current++
     stopped.current = false
+    const current = () => !cancelled && !stopped.current
     setOpenError("")
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
-    invoke<number>("prepare_workspace", {
+    workspaceCommand<number>("prepare_workspace", {
       neighbors: neighborIds,
       accountId: account.id,
       service: serviceId,
@@ -1328,23 +1805,26 @@ function FlowShell({
       y: rect.top,
       width: rect.width,
       height: rect.height,
-    })
+    }, current)
       .then(async (epoch) => {
         if (cancelled || stopped.current) return
+        onOpened(account)
         setStatus(`${service.name} workspace`)
         containerRef.current?.dispatchEvent(new Event("flowpilot-webview-ready"))
         for (const id of neighborIds) {
           await new Promise((resolve) => setTimeout(resolve, 150))
           if (cancelled || stopped.current) break
           try {
-            await invoke("preload_workspace", { accountId: id, service: serviceId, epoch, width: rect.width, height: rect.height })
+            await workspaceCommand("preload_workspace", { accountId: id, service: serviceId, epoch, width: rect.width, height: rect.height }, current)
           } catch (error) {
+            if (error instanceof WorkspaceCommandCancelled) break
             if (!cancelled && !stopped.current) setStatus("Workspace open. Some nearby accounts could not preload.")
             console.warn("Account preload failed", error)
           }
         }
       })
       .catch((error) => {
+        if (error instanceof WorkspaceCommandCancelled) return
         console.error(`${service.name} WebView failed`, error)
         if (!cancelled) {
           setStatus(`Unable to open ${service.name}`)
@@ -1353,24 +1833,56 @@ function FlowShell({
       })
     return () => {
       cancelled = true
-      void invoke("close_google_flow", { accountId: account.id, service: serviceId })
+      stopped.current = true
+      workspaceVersion.current++
+      void workspaceCommand("close_google_flow", { accountId: account.id, service: serviceId })
+        .catch(error => console.error("Workspace hide failed", error))
     }
   }, [account.id, serviceId, preloadSides, neighborKey])
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
+    let disposed = false
+    let frame = 0
+    let resizing = false
+    let dirty = false
+    const current = () => !disposed && !stopped.current
     const syncBounds = () => {
-      const rect = container.getBoundingClientRect()
-      void invoke("resize_google_flow", { accountId: account.id, service: serviceId, x: rect.left, y: rect.top, width: rect.width, height: rect.height })
+      dirty = true
+      // RAF alone still queues one IPC per frame behind a slow native call.
+      // Keep one outstanding resize and sample the newest bounds afterward.
+      if (frame || resizing || !current()) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        if (!current()) return
+        dirty = false
+        const rect = container.getBoundingClientRect()
+        if (rect.width <= 0 || rect.height <= 0) return
+        resizing = true
+        void workspaceCommand("resize_google_flow", { accountId: account.id, service: serviceId, x: rect.left, y: rect.top, width: rect.width, height: rect.height }, current)
+          .catch(error => {
+            if (current() && !(error instanceof WorkspaceCommandCancelled)) {
+              console.error("Workspace resize failed", error)
+              setStatus("Workspace size could not update. Return to Accounts and reopen the profile.")
+            }
+          })
+          .finally(() => {
+            resizing = false
+            if (dirty && current()) syncBounds()
+          })
+      })
     }
-    const onReady = () => syncBounds()
-    container.addEventListener("flowpilot-webview-ready", onReady)
+    container.addEventListener("flowpilot-webview-ready", syncBounds)
+    window.addEventListener("resize", syncBounds)
     const observer = new ResizeObserver(syncBounds)
     observer.observe(container)
     syncBounds()
     return () => {
+      disposed = true
+      cancelAnimationFrame(frame)
       observer.disconnect()
-      container.removeEventListener("flowpilot-webview-ready", onReady)
+      window.removeEventListener("resize", syncBounds)
+      container.removeEventListener("flowpilot-webview-ready", syncBounds)
     }
   }, [fullView, account.id, serviceId])
   useEffect(() => {
@@ -1383,18 +1895,31 @@ function FlowShell({
       window.removeEventListener("resize", dismiss)
     }
   }, [bookmarkMenu])
-  const closeWorkspaces = async (all: boolean) => {
+  const closeWorkspaces = async (scope: WorkspaceCloseScope) => {
+    if (stopped.current) return
+    const version = workspaceVersion.current
     stopped.current = true
     setClosing(true)
+    onClosingChange(true)
     try {
-      await invoke("close_workspaces", { service: all ? null : serviceId })
-      onClosed()
+      await workspaceCommand("close_workspaces", {
+        service: scope === "all" ? null : serviceId,
+        accountId: scope === "profile" ? account.id : null,
+      }, () => workspaceVersion.current === version)
+      if (workspaceVersion.current !== version) return
+      onClosed(scope)
     } catch (error) {
+      if (workspaceVersion.current !== version) return
       setStatus(`Unable to close workspaces: ${String(error)}`)
+      stopped.current = false
       setClosing(false)
+    } finally {
+      onClosingChange(false)
     }
   }
   const showWebview = async () => {
+    const current = currentWorkspace()
+    if (!current()) return
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return
     setBookmarkManagerOpen(false)
@@ -1403,43 +1928,52 @@ function FlowShell({
     setStatus(`Loading ${service.name}...`)
     setOpenError("")
     try {
-      await invoke("open_google_flow", {
+      await workspaceCommand("open_google_flow", {
         accountId: account.id,
         service: serviceId,
         x: rect.left,
         y: rect.top,
         width: rect.width,
         height: rect.height,
-      })
+      }, current)
+      if (!current()) return
       setStatus(`${service.name} workspace`)
     } catch (error) {
+      if (!current() || error instanceof WorkspaceCommandCancelled) return
       console.error(`${service.name} WebView failed`, error)
       setStatus(`Unable to open ${service.name}`)
       setOpenError(String(error))
     }
   }
   const navigateBookmark = async (url: string, name: string) => {
-    if (!bookmarkService) return
+    const current = currentWorkspace()
+    if (!bookmarkService || !current()) return
     try {
       setBookmarkMenu(null)
       if (bookmarkManagerOpen) await showWebview()
+      if (!current()) return
       setStatus(`Opening ${name}...`)
-      await invoke("navigate_service_bookmark", { accountId: account.id, service: bookmarkService, url })
+      await workspaceCommand("navigate_service_bookmark", { accountId: account.id, service: bookmarkService, url }, current)
+      if (!current()) return
       setStatus(`Opened ${name}`)
     } catch (error) {
+      if (!current() || error instanceof WorkspaceCommandCancelled) return
       console.error(`${service.name} bookmark failed`, error)
       setStatus(`Unable to open ${name}. Please check the bookmark URL.`)
     }
   }
   const openBookmarkManager = async () => {
-    if (!bookmarkService) return
+    const current = currentWorkspace()
+    if (!bookmarkService || !current()) return
     try {
-      await invoke("close_google_flow", { accountId: account.id, service: serviceId })
+      await workspaceCommand("close_google_flow", { accountId: account.id, service: serviceId }, current)
+      if (!current()) return
       setBookmarkManagerOpen(true)
       setBookmarkMenu(null)
       clearBookmarkForm()
       setStatus(`Manage ${service.shortName} bookmarks`)
     } catch (error) {
+      if (!current() || error instanceof WorkspaceCommandCancelled) return
       console.error("Unable to open bookmark manager", error)
       setStatus("Unable to open bookmark manager. Please try again.")
     }
@@ -1453,10 +1987,13 @@ function FlowShell({
     clearBookmarkForm()
   }
   const editBookmark = async (bookmark: ServiceBookmark) => {
+    const current = currentWorkspace()
+    if (!current()) return
     try {
       if (!bookmarkManagerOpen) {
-        await invoke("close_google_flow", { accountId: account.id, service: serviceId })
+        await workspaceCommand("close_google_flow", { accountId: account.id, service: serviceId }, current)
       }
+      if (!current()) return
       setBookmarkManagerOpen(true)
       setBookmarkMenu(null)
       setEditingBookmarkId(bookmark.id)
@@ -1465,6 +2002,7 @@ function FlowShell({
       setBookmarkError("")
       setStatus(`Edit ${bookmark.name}`)
     } catch (error) {
+      if (!current() || error instanceof WorkspaceCommandCancelled) return
       console.error("Unable to edit bookmark", error)
       setStatus("Unable to open bookmark editor. Please try again.")
     }
@@ -1485,6 +2023,7 @@ function FlowShell({
   }
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (stopped.current) return
       if (event.key !== "Escape") return
       if (bookmarkMenu) {
         setBookmarkMenu(null)
@@ -1503,31 +2042,29 @@ function FlowShell({
   return (
     <div className={`flow-shell ${bookmarkService ? "has-bookmarks" : ""}`}>
       <div className="flow-bar">
-        <button className="back" onClick={onBack}>‹ Accounts</button>
-        <span className="flow-status" role="status">{status}</span>
+        <button className="back" disabled={closing} onClick={onBack}>‹ Accounts</button>
+        <span className="sr-only">{service.shortName} workspace</span>
+        <span className={`flow-status ${status === `${service.name} workspace` ? "is-ready" : ""}`} role="status">{status}</span>
         <div className="flow-controls">
           <strong className="active-profile-name" title={account.name}>{account.name}</strong>
+          <button className="back" disabled={closing} onClick={onAddAccount}>Add account</button>
           <select className="close-workspaces" aria-label="Close workspaces" value="" disabled={closing}
-            onChange={(event) => { if (event.target.value) void closeWorkspaces(event.target.value === "all") }}>
-            <option value="" disabled>{closing ? "Closing..." : "Close"}</option>
+            onChange={(event) => {
+              const scope = event.target.value
+              if (scope === "profile" || scope === "service" || scope === "all") void closeWorkspaces(scope)
+            }}>
+            <option value="" disabled>{closing ? "Closing..." : "Close current"}</option>
+            <option value="profile">Close current profile</option>
             <option value="service">Close {service.shortName}</option>
             <option value="all">Close all services</option>
           </select>
-          <button className="fullscreen" onClick={onToggleFullView}>
+          <button className="fullscreen" disabled={closing} onClick={onToggleFullView}>
             {fullView ? "Exit Full View" : "Full View"}
           </button>
         </div>
       </div>
       <DownloadNotice message={downloadNotice} onDismiss={onDismissDownload} />
-      <nav className="account-shortcuts" aria-label="Account shortcuts">
-        <button className="shortcut-more" disabled={shortcutStart === 0 || closing} onClick={() => { revealShortcuts.current = "before"; setMoreBefore((value) => value + 5) }}>Oldest more</button>
-        <div className="shortcut-list" ref={shortcutListRef}>
-          {accounts.slice(shortcutStart, shortcutEnd).map((candidate) => <button key={candidate.id}
-            className={candidate.id === account.id ? "active" : ""} aria-current={candidate.id === account.id ? "true" : undefined}
-            disabled={closing} title={candidate.name} onClick={() => onSelectAccount(candidate)}>{candidate.name}</button>)}
-        </div>
-        <button className="shortcut-more" disabled={shortcutEnd === accounts.length || closing} onClick={() => { revealShortcuts.current = "after"; setMoreAfter((value) => value + 5) }}>Latest more</button>
-      </nav>
+      <ProfileSwitcher accounts={accounts} activeId={account.id} disabled={closing} onSelect={onSelectAccount} />
       {bookmarkService && (
         <nav className="flow-bookmark-bar" aria-label={`${service.name} bookmarks`}>
           <button type="button" className="flow-bookmark flow-bookmark-home" onClick={() => void navigateBookmark(service.url, service.shortName)}>
@@ -1568,6 +2105,7 @@ function FlowShell({
           <button type="button" role="menuitem" className="danger-item" onClick={() => removeBookmark(menuBookmark)}>Remove bookmark</button>
         </div>
       )}
+      <div className="workspace-sheet">
       <div ref={containerRef} className="webview-host" aria-label={`${service.name} WebView`}>
         {openError && <div className="workspace-error" role="alert"><h2>Unable to open {service.name}</h2><p>{openError}</p><button className="secondary" onClick={onBack}>Back to accounts</button></div>}
         {bookmarkManagerOpen && bookmarkService && (
@@ -1619,6 +2157,7 @@ function FlowShell({
             </div>
           </section>
         )}
+      </div>
       </div>
     </div>
   )

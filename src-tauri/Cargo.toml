@@ -19,10 +19,13 @@ tauri-plugin-process = "2"
 tauri-plugin-dialog = "2"
 rfd = "0.16"
 base64 = "0.22"
+tokio = { version = "1", features = ["time", "sync"] }
+keyring = { version = "3", features = ["windows-native"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38.2"
-windows = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Com"] }
+windows = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_DataExchange", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

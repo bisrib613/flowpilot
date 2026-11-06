@@ -23,6 +23,14 @@
     "allow-clear-google-flow-cache",
     "allow-load-accounts",
     "allow-save-accounts",
-    "allow-debug-trigger-isolated-dialog"
+    "allow-debug-trigger-isolated-dialog",
+    "allow-google-relogin-status",
+    "allow-google-relogin-save-password",
+    "allow-google-relogin-disable",
+    "allow-check-flow-profile",
+    "allow-run-bulk-shared-login",
+    "allow-name-generator-status",
+    "allow-name-generator-save-key",
+    "allow-name-generator-disable"
   ]
 }
