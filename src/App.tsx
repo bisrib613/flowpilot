@@ -1844,19 +1844,31 @@ function FlowShell({
     if (!container) return
     let disposed = false
     let frame = 0
+    let resizing = false
+    let dirty = false
     const current = () => !disposed && !stopped.current
     const syncBounds = () => {
-      cancelAnimationFrame(frame)
+      dirty = true
+      // RAF alone still queues one IPC per frame behind a slow native call.
+      // Keep one outstanding resize and sample the newest bounds afterward.
+      if (frame || resizing || !current()) return
       frame = requestAnimationFrame(() => {
+        frame = 0
         if (!current()) return
+        dirty = false
         const rect = container.getBoundingClientRect()
         if (rect.width <= 0 || rect.height <= 0) return
+        resizing = true
         void workspaceCommand("resize_google_flow", { accountId: account.id, service: serviceId, x: rect.left, y: rect.top, width: rect.width, height: rect.height }, current)
           .catch(error => {
             if (current() && !(error instanceof WorkspaceCommandCancelled)) {
               console.error("Workspace resize failed", error)
               setStatus("Workspace size could not update. Return to Accounts and reopen the profile.")
             }
+          })
+          .finally(() => {
+            resizing = false
+            if (dirty && current()) syncBounds()
           })
       })
     }

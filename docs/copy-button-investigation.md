@@ -1,6 +1,18 @@
 # Service Copy button investigation
 
-## Current status — PR preview 1.5.22
+## Current status — PR preview 1.5.23
+
+The user confirmed Restore Down does not restore failed Copy. The complete
+source reread found and reproduced a separate resize backlog: one blocked
+native call followed by 45 panel/window resize changes drained 91 invocations.
+The existing effect now permits one outstanding resize and samples latest
+bounds on a dirty follow-up; the same local browser fixture drained two calls.
+Back/resume and Close All during a blocked resize were also checked.
+This is not a native Copy or ChatGPT rendering reproduction. Both reported
+failures remain unresolved. See `source-review-20261106.md` for evidence,
+source scope, remaining findings and verification limits.
+
+## Previous status — PR preview 1.5.22
 
 The user confirmed preload is two profiles per side. The reported profile-3
 failure clears after visiting other profiles, but the furthest visited profile
