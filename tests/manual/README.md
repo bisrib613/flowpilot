@@ -1,5 +1,12 @@
 # Local workspace resize check
 
+For controller health and cache ownership, run
+`python tests/manual/check-native-health.py` with Rust installed separately.
+It compiles the actual std-only health module and cache/lease definitions and
+functions extracted from the manager, then runs their Rust unit tests locally.
+`FLOWPILOT_RUSTC` can select a compiler outside PATH. This does not compile
+Tauri/COM or verify native event delivery; Windows compilation is separate.
+
 `workspace-resize.mjs` exercises the production React build with mocked Tauri
 IPC. It holds a resize promise while the real resize effect receives events,
 then checks bounded calls, final dimensions, Back/switch-profile and Close All ordering.

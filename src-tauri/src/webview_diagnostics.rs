@@ -2,7 +2,7 @@
 #![cfg(all(windows, feature = "diag"))]
 
 use std::{fs::OpenOptions, io::Write, sync::{Arc, Mutex, atomic::{AtomicU8, Ordering}}, time::{SystemTime, UNIX_EPOCH}};
-use webview2_com::{DownloadStartingEventHandler, FocusChangedEventHandler, ProcessFailedEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler, SaveAsUIShowingEventHandler, WebMessageReceivedEventHandler, take_pwstr};
+use webview2_com::{DownloadStartingEventHandler, FocusChangedEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler, SaveAsUIShowingEventHandler, WebMessageReceivedEventHandler, take_pwstr};
 use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2_25, ICoreWebView2SaveAsUIShowingEventArgs, ICoreWebView2NavigationStartingEventArgs};
 use windows::core::{Interface, PWSTR};
 use windows::Win32::{Foundation::HWND, System::DataExchange::GetOpenClipboardWindow, UI::{Input::KeyboardAndMouse::GetFocus, WindowsAndMessaging::{GetAncestor, GetForegroundWindow, IsChild, GA_ROOT}}};
@@ -84,16 +84,8 @@ pub fn attach(controller: &ICoreWebView2Controller, environment: &ICoreWebView2E
         };
         result.map_err(|error| error.to_string())?;
     }
-    let s = sink.clone();
-    let process_label = label.to_string();
-    unsafe { webview.add_ProcessFailed(&ProcessFailedEventHandler::create(Box::new(move |_, args| {
-        if let Some(args) = args {
-            let mut kind = Default::default();
-            args.ProcessFailedKind(&mut kind)?;
-            log_event(&s, "NativeProcessFailed", &format!("webview={} kind={}", process_label, kind.0));
-        }
-        Ok(())
-    })), &mut token) }.map_err(|error| error.to_string())?;
+    // Process failures are handled by the normal controller lifecycle. That
+    // handler also writes the fixed event/category when `diag` is enabled.
     let s = sink.clone(); unsafe { webview.add_NavigationStarting(&NavigationStartingEventHandler::create(Box::new(move |_, args| { if let Some(a) = args { log_event(&s, "NavigationStarting", &safe_uri(&a)); } Ok(()) })), &mut token) }.map_err(|e| e.to_string())?;
     let s = sink.clone(); unsafe { webview.add_NavigationCompleted(&NavigationCompletedEventHandler::create(Box::new(move |_, _| { log_event(&s, "NavigationCompleted", ""); Ok(()) })), &mut token) }.map_err(|e| e.to_string())?;
     let s = sink.clone(); unsafe { webview.add_NewWindowRequested(&NewWindowRequestedEventHandler::create(Box::new(move |_, _| { log_event(&s, "NewWindowRequested", ""); Ok(()) })), &mut token) }.map_err(|e| e.to_string())?;

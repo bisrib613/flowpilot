@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use crate::webview_health::ViewHealth;
 
 use tauri::path::BaseDirectory;
 use tauri::webview::WebviewBuilder;
@@ -9,12 +10,15 @@ use tauri::{AppHandle, Manager, Runtime, WebviewUrl};
 #[cfg(windows)]
 use webview2_com::{
     ClearBrowsingDataCompletedHandler, WindowCloseRequestedEventHandler,
-    PermissionRequestedEventHandler,
+    PermissionRequestedEventHandler, ProcessFailedEventHandler, NavigationCompletedEventHandler,
     Microsoft::Web::WebView2::Win32::{
         ICoreWebView2Profile2, ICoreWebView2_13,
         COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
         COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS,
         COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
     },
 };
 #[cfg(windows)]
@@ -24,9 +28,14 @@ const WEBVIEW_LABEL_PREFIX: &str = "flowpilot-service";
 const AUTOMATION_LABEL_PREFIX: &str = "flowpilot-automation";
 
 
+struct CachedView {
+    revision: u64,
+    health: Arc<ViewHealth>,
+}
+
 pub struct WebviewManager {
     active_account_id: Mutex<Option<String>>,
-    cached_accounts: Mutex<HashMap<String, u64>>,
+    cached_accounts: Mutex<HashMap<String, CachedView>>,
     usage_counter: Mutex<u64>,
     operation: Mutex<()>,
     preload_epoch: Mutex<u64>,
@@ -188,9 +197,61 @@ fn touch_account(state: &WebviewManager, account_id: &str) -> Result<(), String>
         .cached_accounts
         .lock()
         .map_err(|_| "webview state unavailable")?;
-    cached.insert(account_id.to_string(), *counter);
+    cached.entry(account_id.to_string())
+        .and_modify(|entry| entry.revision = *counter)
+        .or_insert_with(|| CachedView { revision: *counter, health: Arc::new(ViewHealth::default()) });
     Ok(())
 }
+
+fn cached_view_failed(state: &WebviewManager, key: &str) -> Result<bool, String> {
+    Ok(state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
+        .get(key).is_some_and(|entry| entry.health.needs_recreate()))
+}
+
+#[cfg(windows)]
+fn attach_view_health<R: Runtime>(view: &tauri::Webview<R>, health: Arc<ViewHealth>) -> Result<(), String> {
+    use crate::webview_health::Failure;
+    let label = view.label().to_string();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    view.with_webview(move |platform| {
+        let result = (|| -> Result<(), String> {
+            let native = unsafe { platform.controller().CoreWebView2() }.map_err(|e| e.to_string())?;
+            let process_health = health.clone();
+            let mut token = Default::default();
+            unsafe { native.add_ProcessFailed(&ProcessFailedEventHandler::create(Box::new(move |_, args| {
+                if let Some(args) = args {
+                    let mut kind = Default::default();
+                    args.ProcessFailedKind(&mut kind)?;
+                    let failure = match kind {
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED |
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED => Failure::Exited,
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE => Failure::Unresponsive,
+                        _ => Failure::Other,
+                    };
+                    process_health.record(failure);
+                    crate::webview_download_bridge::diag("NativeProcessFailed", &format!("webview={} kind={}", label, kind.0));
+                }
+                Ok(())
+            })), &mut token) }.map_err(|e| e.to_string())?;
+            unsafe { native.add_NavigationCompleted(&NavigationCompletedEventHandler::create(Box::new(move |_, args| {
+                if let Some(args) = args {
+                    let mut success = Default::default();
+                    args.IsSuccess(&mut success)?;
+                    if success.as_bool() { health.navigation_completed(); }
+                }
+                Ok(())
+            })), &mut token) }.map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        let _ = sender.send(result);
+    }).map_err(|e| e.to_string())?;
+    // open_view is dispatched on the UI thread, so with_webview is inline.
+    // Never block the UI thread waiting for another event-loop turn.
+    receiver.try_recv().map_err(|_| "WebView health setup must run on the UI thread".to_string())?
+}
+
+#[cfg(not(windows))]
+fn attach_view_health<R: Runtime>(_view: &tauri::Webview<R>, _health: Arc<ViewHealth>) -> Result<(), String> { Ok(()) }
 
 fn validate_account_id(account_id: &str) -> Result<(), String> {
     if account_id.is_empty()
@@ -544,6 +605,14 @@ fn open_view<R: Runtime>(
             }
         }
     }
+    if cached_view_failed(&state, &key)? {
+        if background {
+            return Err("Cached WebView reported a native process failure; open this profile to recover it".into());
+        }
+        // Recovery is owned by the foreground open, outside the native callback.
+        // Destroy only this controller; keep its cookies and profile directory.
+        destroy_view(app, &key)?;
+    }
     if let Some(webview) = app.get_webview(&requested_label) {
         if background { return Ok(()); }
         webview
@@ -669,6 +738,9 @@ fn open_view<R: Runtime>(
         // Track the child before fallible setup so a failed rollback still leaves
         // it discoverable by Close Current / Platform / All and the next eviction.
         touch_account(&state, &key)?;
+        let health = state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
+            .get(&key).ok_or("new WebView is not tracked")?.health.clone();
+        attach_view_health(&view, health)?;
         attach_webview_permissions(&view)?;
         if let Some((port, _)) = flow_environment {
             state.automation_ports.lock().map_err(|_| "webview state unavailable")?.insert(key.clone(), port);
@@ -780,14 +852,14 @@ pub struct BackgroundView {
 }
 
 fn background_view(state: &WebviewManager, key: String, created: bool) -> Result<BackgroundView, String> {
-    let revision = *state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
-        .get(&key).ok_or("background WebView is no longer open")?;
+    let revision = state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
+        .get(&key).ok_or("background WebView is no longer open")?.revision;
     Ok(BackgroundView { key, revision, created })
 }
 
 fn background_view_is_current(state: &WebviewManager, view: &BackgroundView) -> Result<bool, String> {
     Ok(state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
-        .get(&view.key).copied() == Some(view.revision))
+        .get(&view.key).map(|entry| entry.revision) == Some(view.revision))
 }
 
 fn finish_background_view<R: Runtime>(app: &AppHandle<R>, view: BackgroundView) -> Result<(), String> {
@@ -1188,6 +1260,34 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
 #[cfg(test)]
 mod preload_tests {
     use super::{cancel_preloads, parse_bookmark_url, WebviewManager};
+
+    #[test]
+    fn cache_promotion_preserves_controller_failure_state() {
+        use super::{cached_view_failed, touch_account};
+        use crate::webview_health::Failure;
+        let state = WebviewManager::default();
+        touch_account(&state, "claude-a").unwrap();
+        let health = state.cached_accounts.lock().unwrap().get("claude-a").unwrap().health.clone();
+        health.record(Failure::Exited);
+        touch_account(&state, "claude-a").unwrap();
+        assert!(cached_view_failed(&state, "claude-a").unwrap());
+        touch_account(&state, "claude-b").unwrap();
+        assert!(!cached_view_failed(&state, "claude-b").unwrap());
+    }
+
+    #[test]
+    fn replacing_a_failed_cache_entry_isolated_from_old_native_callbacks() {
+        use super::{cached_view_failed, touch_account};
+        use crate::webview_health::Failure;
+        let state = WebviewManager::default();
+        touch_account(&state, "claude-a").unwrap();
+        let old_callback = state.cached_accounts.lock().unwrap().get("claude-a").unwrap().health.clone();
+        old_callback.record(Failure::Exited);
+        state.cached_accounts.lock().unwrap().remove("claude-a");
+        touch_account(&state, "claude-a").unwrap();
+        old_callback.record(Failure::Unresponsive);
+        assert!(!cached_view_failed(&state, "claude-a").unwrap());
+    }
 
     #[test]
     fn background_cleanup_lease_survives_only_until_the_view_is_reused() {

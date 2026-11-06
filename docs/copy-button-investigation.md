@@ -1,6 +1,22 @@
 # Service Copy button investigation
 
-## Current status — PR preview 1.5.23
+## Current status — PR preview 1.5.24
+
+The user reports Copy and Download both recover after application restart.
+The new videos precede the user's test of 1.5.23; that preview is untested on
+their affected profiles. 1.5.23's bounded resize queue was not a proven remedy.
+
+Normal service children now retain native process-failure health in their cache
+entry. A browser/main renderer exit, or repeated unresponsive notifications,
+prevents reuse on the next foreground opening: that controller is recreated
+without changing its profile directory. Background preload does not loop
+recreation, and callbacks never destroy/reload controllers. Healthy views keep
+their existing reuse path. See `native-action-recovery-20261106.md` for exact
+policy, local checks and limitations. An actual ProcessFailed signal during
+the user's incident has **not** been observed. Copy/Download resolution remains
+unverified; this corrects missing native failure handling, not a proven cause.
+
+## Previous status — PR preview 1.5.23
 
 The user confirmed Restore Down does not restore failed Copy. The complete
 source reread found and reproduced a separate resize backlog: one blocked

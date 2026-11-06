@@ -1,5 +1,9 @@
 # Full-source review — 6 November 2026
 
+Follow-up: preview 1.5.24 adds native failure-state cache recovery, described in
+`native-action-recovery-20261106.md`. The findings below describe the 1.5.23
+snapshot; the normal-build ProcessFailed gap is addressed by that follow-up.
+
 ## Snapshot and scope
 
 PR14 branch: `feat/claude-platform-relogin-scope-20261102`.

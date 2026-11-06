@@ -6,6 +6,7 @@ mod google_relogin;
 mod name_generator;
 mod webview_manager;
 mod webview_setup;
+mod webview_health;
 mod native_downloads;
 mod download_settings;
 mod webview_download_bridge;
