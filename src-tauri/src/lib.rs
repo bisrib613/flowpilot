@@ -2,6 +2,8 @@ use std::time::Duration;
 use tauri::Emitter;
 
 mod account_store;
+mod atomic_store;
+mod prompt_store;
 mod google_relogin;
 mod name_generator;
 mod webview_manager;
@@ -420,6 +422,8 @@ pub fn run() {
             google_relogin::google_relogin_status,
             google_relogin::google_relogin_save_password,
             google_relogin::google_relogin_disable,
+            prompt_store::list_prompts,
+            prompt_store::mutate_prompt,
             account_store::load_accounts,
             account_store::save_accounts
         ])

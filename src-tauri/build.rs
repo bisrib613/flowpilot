@@ -27,6 +27,8 @@ fn main() {
                 "google_relogin_status",
                 "google_relogin_save_password",
                 "google_relogin_disable",
+                "list_prompts",
+                "mutate_prompt",
                 "load_accounts",
                 "save_accounts",
             ]),

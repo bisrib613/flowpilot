@@ -31,6 +31,8 @@
     "allow-run-bulk-shared-login",
     "allow-name-generator-status",
     "allow-name-generator-save-key",
-    "allow-name-generator-disable"
+    "allow-name-generator-disable",
+    "allow-list-prompts",
+    "allow-mutate-prompt"
   ]
 }

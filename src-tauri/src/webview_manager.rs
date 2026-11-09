@@ -66,6 +66,8 @@ fn service_url(service: &str) -> Result<&'static str, String> {
         "leonardo" => Ok("https://app.leonardo.ai/"),
         "chatgpt" => Ok("https://chatgpt.com/"),
         "migoo" => Ok("https://migoo.ai/home"),
+        "gemini" => Ok("https://gemini.google.com/app"),
+        "suno" => Ok("https://suno.com/"),
         "claude" => Ok("https://claude.ai/"),
         _ => Err("invalid service".to_string()),
     }
@@ -296,7 +298,7 @@ fn trusted_service_origin(url: &tauri::Url) -> bool {
         Some(
             "flow.google.com" | "claude.ai" | "chatgpt.com" | "app.leonardo.ai" |
             "leonardo.ai" | "www.dola.com" | "dola.com" | "migoo.ai" |
-            "www.migoo.ai"
+            "www.migoo.ai" | "gemini.google.com" | "suno.com" | "www.suno.com"
         )
     )
 }
@@ -1090,11 +1092,14 @@ fn parse_bookmark_url(service: &str, url: &str) -> Result<tauri::Url, String> {
             "flow" => {
                 (parsed.host_str() == Some("flow.google.com")
                     && (parsed.path() == "/" || parsed.path().starts_with("/project/")
-                        || parsed.path().starts_with("/library")))
+                        || parsed.path().starts_with("/library")
+                        || parsed.path() == "/shared/tool/c66ec783-8729-4035-9934-b7f48907365c"))
                 || (parsed.host_str() == Some("labs.google")
                     && (parsed.path() == "/fx/tools/flow"
                         || parsed.path().starts_with("/fx/tools/flow/")))
             }
+            "gemini" => parsed.host_str() == Some("gemini.google.com")
+                || (parsed.host_str() == Some("share.gemini.google") && parsed.path() == "/jLVZLHqihx0e"),
             "chatgpt" => parsed.host_str() == Some("chatgpt.com"),
             _ => false,
         };

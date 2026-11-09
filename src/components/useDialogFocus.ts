@@ -18,7 +18,7 @@ export function useDialogFocus(open: boolean, returnFocus: RefObject<HTMLElement
       }
       branch = branch.parentElement
     }
-    const controls = () => Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]')).filter(element => element.getClientRects().length > 0)
+    const controls = () => Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')).filter(element => element.getClientRects().length > 0)
     const initial = dialog.querySelector<HTMLElement>("[autofocus]") || controls()[0]
     initial?.focus()
     const trap = (event: KeyboardEvent) => {

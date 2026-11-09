@@ -5,6 +5,8 @@ import { invoke } from "@tauri-apps/api/core"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { check, type Update } from "@tauri-apps/plugin-updater"
 import packageJson from "../package.json"
+import UpdateNotice from "./components/UpdateNotice"
+import PromptLibrary from "./components/PromptLibrary"
 import ProfileSwitcher from "./components/ProfileSwitcher"
 import { workspaceCommand, WorkspaceCommandCancelled } from "./services/workspace-commands"
 import { useDialogFocus } from "./components/useDialogFocus"
@@ -13,9 +15,9 @@ import { loadAccounts, saveAccounts } from "./services/account-store"
 import { generateIndonesianName } from "./services/signup-name"
 import { availableSharedSources, defaultSortDirection, PROFILE_SORT_OPTIONS, readProfileSort, sortProfileCards, type ProfileSort, type ProfileSortKey } from "./services/profile-features"
 
-type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt" | "migoo" | "claude"
-type AppView = "accounts" | "favorites" | "settings" | "flow"
-type BookmarkServiceId = "flow" | "chatgpt"
+type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt" | "migoo" | "claude" | "gemini" | "suno"
+type AppView = "accounts" | "favorites" | "settings" | "flow" | "prompts"
+type BookmarkServiceId = "flow" | "chatgpt" | "gemini"
 type ServiceBookmark = {
   id: string
   name: string
@@ -40,15 +42,22 @@ const SERVICES: Record<ServiceId, { name: string; shortName: string; logo: strin
   leonardo: { name: "Leonardo AI", shortName: "Leonardo", logo: "/leonardo-logo.png", url: "https://app.leonardo.ai/" },
   chatgpt: { name: "ChatGPT", shortName: "ChatGPT", logo: "/chatgpt-logo.png", url: "https://chatgpt.com/" },
   migoo: { name: "Migoo", shortName: "Migoo", logo: "/migoo-logo.png", url: "https://migoo.ai/home" },
+  gemini: { name: "Gemini", shortName: "Gemini", logo: "/gemini.webp", url: "https://gemini.google.com/app" },
+  suno: { name: "Suno", shortName: "Suno", logo: "/suno.jpg", url: "https://suno.com/" },
   claude: { name: "Claude", shortName: "Claude", logo: "/claude-logo.svg", url: "https://claude.ai/" },
+}
+const BUILTIN_TOOLS: Partial<Record<ServiceId, ServiceBookmark>> = {
+  flow: { id: "storyboard", name: "Storyboard", url: "https://flow.google.com/shared/tool/c66ec783-8729-4035-9934-b7f48907365c" },
+  gemini: { id: "tts", name: "Gemini TTS", url: "https://share.gemini.google/jLVZLHqihx0e" },
 }
 const serviceOf = (account: Account): ServiceId => account.service || "flow"
 const BOOKMARK_STORAGE_KEYS: Record<BookmarkServiceId, string> = {
+  gemini: "flowpilot-gemini-bookmarks",
   flow: "flowpilot-flow-bookmarks",
   chatgpt: "flowpilot-chatgpt-bookmarks",
 }
 const supportsBookmarks = (service: ServiceId): service is BookmarkServiceId =>
-  service === "flow" || service === "chatgpt"
+  service === "flow" || service === "chatgpt" || service === "gemini"
 const isBookmarkUrl = (service: BookmarkServiceId, value: string) => {
   try {
     const url = new URL(value)
@@ -57,10 +66,11 @@ const isBookmarkUrl = (service: BookmarkServiceId, value: string) => {
       url.username ||
       url.password
     ) return false
+    if (service === "gemini") return url.hostname === "gemini.google.com" || (url.hostname === "share.gemini.google" && url.pathname === "/jLVZLHqihx0e")
     if (service === "chatgpt") return url.hostname === "chatgpt.com"
     return (
       (url.hostname === "flow.google.com" &&
-        (url.pathname === "/" || url.pathname.startsWith("/project/") || url.pathname.startsWith("/library"))) ||
+        (url.pathname === "/" || url.pathname.startsWith("/project/") || url.pathname.startsWith("/library") || url.pathname === "/shared/tool/c66ec783-8729-4035-9934-b7f48907365c")) ||
       (url.hostname === "labs.google" &&
         (url.pathname === "/fx/tools/flow" || url.pathname.startsWith("/fx/tools/flow/")))
     )
@@ -95,7 +105,7 @@ const TELEGRAM_CHANNEL_URL = ""
 const bookmarkUrlExample = (service: BookmarkServiceId) =>
   service === "flow"
     ? "https://flow.google.com/project/..."
-    : "https://chatgpt.com/..."
+    : service === "gemini" ? "https://gemini.google.com/gem/..." : "https://chatgpt.com/..."
 export default function App() {
   const [downloadNotice, setDownloadNotice] = useState("")
   useEffect(() => {
@@ -111,6 +121,7 @@ export default function App() {
   const [bookmarksByService, setBookmarksByService] = useState<Record<BookmarkServiceId, ServiceBookmark[]>>(() => ({
     flow: loadBookmarks("flow"),
     chatgpt: loadBookmarks("chatgpt"),
+    gemini: loadBookmarks("gemini"),
   }))
   const [preloadSides, setPreloadSides] = useState(readPreloadSides)
   const [settingsTab, setSettingsTab] = useState("general")
@@ -410,6 +421,10 @@ export default function App() {
           setBulkShareResults((current) => ({ ...current, [account.id]: "Stopped" }))
           continue
         }
+        if (service === "gemini" || service === "suno") {
+          setBulkShareResults(current => ({ ...current, [account.id]: "Profile added — open it to sign in" }))
+          continue
+        }
         setBulkShareProgress(`${index + 1} / ${additions.length} · ${account.name}`)
         setBulkShareResults((current) => ({ ...current, [account.id]: "Signing in…" }))
         try {
@@ -539,6 +554,7 @@ export default function App() {
   }, [accounts, accountsLoaded, accountStorageReady])
   useEffect(() => {
     try {
+      localStorage.setItem(BOOKMARK_STORAGE_KEYS.gemini, JSON.stringify(bookmarksByService.gemini))
       localStorage.setItem(BOOKMARK_STORAGE_KEYS.flow, JSON.stringify(bookmarksByService.flow))
       localStorage.setItem(BOOKMARK_STORAGE_KEYS.chatgpt, JSON.stringify(bookmarksByService.chatgpt))
     } catch (error) {
@@ -712,6 +728,12 @@ export default function App() {
     return () => document.removeEventListener("click", dismiss)
   }, [menu])
   useDialogFocus(Boolean(dialog || addAccountOpen || bulkShareOpen), dialogReturnFocus)
+  if (view === "prompts") return (
+    <div className="app">
+      <Sidebar view={view} setView={setView} accounts={accounts} activeService={activeService} onService={selectService} />
+      <main className="content settings-page prompts-page"><PromptLibrary /></main>
+    </div>
+  )
   if (view === "flow" && active)
     return (
       <div className={`app ${fullView ? "full" : ""}`}>
@@ -794,6 +816,7 @@ export default function App() {
     <div className="app">
       <Sidebar view={view} setView={setView} accounts={accounts} activeService={activeService} onService={selectService} />
       <main className={`content ${view === "accounts" || view === "favorites" ? "accounts-page" : "settings-page"}`}>
+        <UpdateNotice onReview={() => { setSettingsTab("updates"); setView("settings") }} />
         <DownloadNotice message={downloadNotice} onDismiss={() => setDownloadNotice("")} />
         <header>
           <h1 className={view === "accounts" ? "sr-only" : undefined}>{view === "settings" ? "Settings" : view === "favorites" ? "Favorite Accounts" : SERVICES[activeService].name}</h1>
@@ -866,7 +889,7 @@ export default function App() {
         {view === "accounts" && activeService === bulkShareService && (bulkShareRunning || Object.keys(bulkShareResults).length > 0) && (
           <section className="cache-status bulk-login-report" role="status" aria-label="Bulk shared Google sign-in results">
             <div>
-              <strong>Bulk Google sign-in {bulkShareRunning ? `· ${bulkShareProgress}` : "· completed"}</strong>
+              <strong>{bulkShareService === "gemini" || bulkShareService === "suno" ? "Bulk Add Profile" : "Bulk Google sign-in"} {bulkShareRunning ? `· ${bulkShareProgress}` : "· completed"}</strong>
               <ul>
                 {accounts.filter((a) => serviceOf(a) === activeService && bulkShareResults[a.id]).map((a) => (
                   <li key={a.id}>{a.name}: {bulkShareResults[a.id]}</li>
@@ -1007,15 +1030,15 @@ export default function App() {
                     </label>
                   ))}
               </div>
-              <p className="session-note">Existing links are excluded. After adding, Flowpilot automatically
-                opens each service, selects Google sign-in, and checks the result using its shared Flow session.
-                No fresh Google password login is attempted.</p>
+              <p className="session-note">{activeService === "gemini" || activeService === "suno"
+                ? "Existing links are excluded. Profiles are added using the selected Flow session. Open each profile to complete sign-in; automatic sign-in is not yet verified for this service."
+                : "Existing links are excluded. After adding, Flowpilot opens each service, selects Google sign-in, and checks the result using its shared Flow session. No fresh Google password login is attempted."}</p>
               {addAccountError && <p className="dialog-error" role="alert">{addAccountError}</p>}
               <div className="dialog-actions">
                 <button className="secondary" onClick={() => setBulkShareOpen(false)}>Cancel</button>
                 <button className="primary" disabled={!bulkShareSelected.length || bulkShareRunning}
                   onClick={() => void createBulkSharedProfiles()}>
-                  {bulkShareRunning ? "Saving…" : `Add & sign in ${bulkShareSelected.length} profiles`}
+                  {bulkShareRunning ? "Saving…" : `${activeService === "gemini" || activeService === "suno" ? "Add" : "Add & sign in"} ${bulkShareSelected.length} profiles`}
                 </button>
               </div>
             </div>
@@ -1119,6 +1142,7 @@ function Sidebar({
       <button disabled={disabled} className={view === "favorites" ? "active" : ""} title="Favorites" onClick={() => setView("favorites")}>
         <SidebarIcon name="favorites" /><span>Favorites</span>
       </button>
+      <button disabled={disabled} className={view === "prompts" ? "active" : ""} aria-current={view === "prompts" ? "page" : undefined} title="Prompt Library" aria-label="Prompt Library" onClick={() => setView("prompts")}><img className="sidebar-icon" src="/icons/prompts.svg" width="18" height="18" alt="" /><span>Prompt Library</span></button>
       <div className="sidebar-spacer" />
       <button disabled={disabled} className={view === "settings" ? "active" : ""} title="Settings" onClick={() => setView("settings")}>
         <SidebarIcon name="settings" /><span>Settings</span>
@@ -2071,6 +2095,7 @@ function FlowShell({
             <img src={service.logo} alt="" />
             <span>{service.shortName}</span>
           </button>
+          {BUILTIN_TOOLS[serviceId] && <button type="button" className="flow-bookmark" disabled={closing} onClick={() => { const tool = BUILTIN_TOOLS[serviceId]!; void navigateBookmark(tool.url, tool.name) }}>{BUILTIN_TOOLS[serviceId]!.name}</button>}
           {bookmarks.map((bookmark) => (
             <button
               type="button"

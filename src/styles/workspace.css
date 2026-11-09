@@ -353,3 +353,5 @@ aside .side-bottom > .owner-label { margin: 0; color: var(--text); font-size: 14
 
 .account-shortcuts > .shortcut-more:first-child { right: auto; left: 0; }
 @media (max-width: 800px) { .account-shortcuts { padding-inline: 25px; } }
+
+.update-startup-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 16px; border: 1px solid #747e83; border-radius: 6px; background: #dce2e5; color: #20282c; }

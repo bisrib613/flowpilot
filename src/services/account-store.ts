@@ -10,12 +10,17 @@ export type StoredAccount = {
   order: number
   addedAt?: number
   lastOpenedAt?: number
-  service?: "flow" | "dola" | "leonardo" | "chatgpt" | "migoo" | "claude"
+  service?: "flow" | "dola" | "leonardo" | "chatgpt" | "migoo" | "claude" | "gemini" | "suno"
   flowSessionId?: string
 }
 
 const STORAGE_KEY = "flowpilot-accounts"
-const SERVICES = new Set(["flow", "dola", "leonardo", "chatgpt", "migoo", "claude"])
+const SERVICES = new Set(["flow", "dola", "leonardo", "chatgpt", "migoo", "claude", "gemini", "suno"])
+
+// Failure to clean up an obsolete browser cache must not turn a successful native write into a failed save.
+function removeLegacyCache() {
+  try { localStorage.removeItem(STORAGE_KEY) } catch { /* Native data is authoritative. */ }
+}
 
 function isAccount(value: unknown): value is StoredAccount {
   if (!value || typeof value !== "object") return false
@@ -44,7 +49,7 @@ export async function loadAccounts(): Promise<StoredAccount[]> {
     const native = await invoke<unknown>("load_accounts")
     if (native !== null && native !== undefined) {
       if (!Array.isArray(native) || !native.every(isAccount)) throw new Error("Invalid stored account data")
-      localStorage.removeItem(STORAGE_KEY)
+      removeLegacyCache()
       return [...native].sort((a, b) => a.order - b.order)
     }
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -52,7 +57,7 @@ export async function loadAccounts(): Promise<StoredAccount[]> {
       const parsed: unknown = JSON.parse(raw)
       if (!Array.isArray(parsed) || !parsed.every(isAccount)) throw new Error("Invalid stored account data")
       await invoke("save_accounts", { accounts: parsed })
-      localStorage.removeItem(STORAGE_KEY)
+      removeLegacyCache()
       return [...parsed].sort((a, b) => a.order - b.order)
     }
     return []
@@ -69,7 +74,7 @@ export function saveAccounts(accounts: StoredAccount[]): Promise<void> {
   // Preserve write order even when multiple React updates arrive in quick succession.
   const pending = saveQueue.catch(() => undefined).then(async () => {
     await invoke("save_accounts", { accounts })
-    localStorage.removeItem(STORAGE_KEY)
+    removeLegacyCache()
   })
   saveQueue = pending
   return pending
