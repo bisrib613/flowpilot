@@ -69,6 +69,8 @@ fn service_url(service: &str) -> Result<&'static str, String> {
         "gemini" => Ok("https://gemini.google.com/app"),
         "suno" => Ok("https://suno.com/"),
         "claude" => Ok("https://claude.ai/"),
+        "pinterest" => Ok("https://www.pinterest.com/"),
+        "threads" => Ok("https://www.threads.com/"),
         _ => Err("invalid service".to_string()),
     }
 }
@@ -130,7 +132,7 @@ mod session_tests {
     fn automatic_download_permissions_are_scoped_to_trusted_https_services() {
         use super::trusted_service_origin;
         let parse = |url: &str| url.parse::<tauri::Url>().unwrap();
-        for url in ["https://claude.ai/new", "https://chatgpt.com/", "https://flow.google.com/"] {
+        for url in ["https://claude.ai/new", "https://chatgpt.com/", "https://flow.google.com/", "https://www.pinterest.com/", "https://www.threads.com/"] {
             assert!(trusted_service_origin(&parse(url)));
         }
         for url in ["https://claude.ai.evil.invalid/", "http://claude.ai/", "https://accounts.google.com/"] {
@@ -139,6 +141,25 @@ mod session_tests {
     }
 
     use serde_json::json;
+
+    #[test]
+    fn social_profiles_are_distinct_and_can_borrow_a_flow_session() {
+        use super::{profile_key, service_url};
+        assert_eq!(service_url("pinterest").unwrap(), "https://www.pinterest.com/");
+        assert_eq!(service_url("threads").unwrap(), "https://www.threads.com/");
+        assert_eq!(profile_key("pinterest", "a").unwrap(), "pinterest-a");
+        assert_eq!(profile_key("threads", "a").unwrap(), "threads-a");
+        let accounts = json!([
+            {"id":"source","service":"flow"},
+            {"id":"pin","service":"pinterest","flowSessionId":"source"},
+            {"id":"thread","service":"threads","flowSessionId":"source"},
+            {"id":"standalone","service":"threads"}
+        ]);
+        assert_eq!(session_key_from_accounts(&accounts, "pinterest", "pin").unwrap(), "flow-source");
+        assert_eq!(session_key_from_accounts(&accounts, "threads", "thread").unwrap(), "flow-source");
+        assert_eq!(session_key_from_accounts(&accounts, "threads", "standalone").unwrap(), "threads-standalone");
+        assert!(!may_delete_session_directory(&accounts, "flow", "source").unwrap());
+    }
 
     #[test]
     fn deletion_preserves_borrowed_and_referenced_session_directories() {
@@ -298,7 +319,8 @@ fn trusted_service_origin(url: &tauri::Url) -> bool {
         Some(
             "flow.google.com" | "claude.ai" | "chatgpt.com" | "app.leonardo.ai" |
             "leonardo.ai" | "www.dola.com" | "dola.com" | "migoo.ai" |
-            "www.migoo.ai" | "gemini.google.com" | "suno.com" | "www.suno.com"
+            "www.migoo.ai" | "gemini.google.com" | "suno.com" | "www.suno.com" |
+            "pinterest.com" | "www.pinterest.com" | "threads.com" | "www.threads.com"
         )
     )
 }

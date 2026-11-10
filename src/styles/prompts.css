@@ -19,8 +19,23 @@
 .prompt-detail { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 55vh; overflow: auto; margin-top: 16px; }
 .prompt-library button:focus-visible, .prompt-library select:focus-visible, .prompt-library textarea:focus-visible { outline: 2px solid #244f79; outline-offset: 3px; }
 /* The extra services and library entry must remain reachable at minimum height. */
-.app > aside { overflow-y: auto; }
+/* Keep utility navigation visible; scroll the growing platform list independently. */
+.app > aside { overflow: hidden; }
 .app > aside > * { flex-shrink: 0; }
+.app > aside > .service-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 64px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  gap: 4px;
+  padding-right: 2px;
+  scrollbar-width: thin;
+}
+.app > aside > .service-list > button { flex: 0 0 40px; }
+.app > aside > .sidebar-spacer { flex: 0 0 8px; min-height: 8px; }
+.app > aside > .side-bottom { margin-top: 8px; }
 
 .app > .content.prompts-page { padding: 24px; overflow-y: auto; }
 .prompt-filters input, .prompt-filters select, .prompt-actions select, .prompt-dialog input {

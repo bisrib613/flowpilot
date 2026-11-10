@@ -14,8 +14,8 @@ import { neighborIndices, readPreloadSides, rememberWorkspace, forgetWorkspaces,
 import { loadAccounts, saveAccounts } from "./services/account-store"
 import { generateIndonesianName } from "./services/signup-name"
 import { availableSharedSources, defaultSortDirection, PROFILE_SORT_OPTIONS, readProfileSort, sortProfileCards, type ProfileSort, type ProfileSortKey } from "./services/profile-features"
+import { SERVICES, SERVICE_IDS, requiresManualSharedSignIn, type ServiceId } from "./services/service-registry"
 
-type ServiceId = "flow" | "dola" | "leonardo" | "chatgpt" | "migoo" | "claude" | "gemini" | "suno"
 type AppView = "accounts" | "favorites" | "settings" | "flow" | "prompts"
 type BookmarkServiceId = "flow" | "chatgpt" | "gemini"
 type ServiceBookmark = {
@@ -35,16 +35,6 @@ type Account = {
   lastOpenedAt?: number
   service?: ServiceId
   flowSessionId?: string
-}
-const SERVICES: Record<ServiceId, { name: string; shortName: string; logo: string; url: string }> = {
-  flow: { name: "Google Flow", shortName: "Flow", logo: "/flow-logo.png", url: "https://flow.google.com/" },
-  dola: { name: "Dola", shortName: "Dola", logo: "/dola-logo.png", url: "https://www.dola.com/" },
-  leonardo: { name: "Leonardo AI", shortName: "Leonardo", logo: "/leonardo-logo.png", url: "https://app.leonardo.ai/" },
-  chatgpt: { name: "ChatGPT", shortName: "ChatGPT", logo: "/chatgpt-logo.png", url: "https://chatgpt.com/" },
-  migoo: { name: "Migoo", shortName: "Migoo", logo: "/migoo-logo.png", url: "https://migoo.ai/home" },
-  gemini: { name: "Gemini", shortName: "Gemini", logo: "/gemini.webp", url: "https://gemini.google.com/app" },
-  suno: { name: "Suno", shortName: "Suno", logo: "/suno.jpg", url: "https://suno.com/" },
-  claude: { name: "Claude", shortName: "Claude", logo: "/claude-logo.svg", url: "https://claude.ai/" },
 }
 const BUILTIN_TOOLS: Partial<Record<ServiceId, ServiceBookmark>> = {
   flow: { id: "storyboard", name: "Storyboard", url: "https://flow.google.com/shared/tool/c66ec783-8729-4035-9934-b7f48907365c" },
@@ -127,7 +117,7 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState("general")
   const [activeService, setActiveService] = useState<ServiceId>("flow")
   const [sortByService, setSortByService] = useState<Record<ServiceId, ProfileSort>>(() =>
-    (Object.keys(SERVICES) as ServiceId[]).reduce((record, service) => {
+    SERVICE_IDS.reduce((record, service) => {
       record[service] = readProfileSort(service)
       return record
     }, {} as Record<ServiceId, ProfileSort>)
@@ -421,7 +411,7 @@ export default function App() {
           setBulkShareResults((current) => ({ ...current, [account.id]: "Stopped" }))
           continue
         }
-        if (service === "gemini" || service === "suno") {
+        if (requiresManualSharedSignIn(service)) {
           setBulkShareResults(current => ({ ...current, [account.id]: "Profile added — open it to sign in" }))
           continue
         }
@@ -889,7 +879,7 @@ export default function App() {
         {view === "accounts" && activeService === bulkShareService && (bulkShareRunning || Object.keys(bulkShareResults).length > 0) && (
           <section className="cache-status bulk-login-report" role="status" aria-label="Bulk shared Google sign-in results">
             <div>
-              <strong>{bulkShareService === "gemini" || bulkShareService === "suno" ? "Bulk Add Profile" : "Bulk Google sign-in"} {bulkShareRunning ? `· ${bulkShareProgress}` : "· completed"}</strong>
+              <strong>{bulkShareService !== null && requiresManualSharedSignIn(bulkShareService) ? "Bulk Add Profile" : "Bulk Google sign-in"} {bulkShareRunning ? `· ${bulkShareProgress}` : "· completed"}</strong>
               <ul>
                 {accounts.filter((a) => serviceOf(a) === activeService && bulkShareResults[a.id]).map((a) => (
                   <li key={a.id}>{a.name}: {bulkShareResults[a.id]}</li>
@@ -1030,7 +1020,7 @@ export default function App() {
                     </label>
                   ))}
               </div>
-              <p className="session-note">{activeService === "gemini" || activeService === "suno"
+              <p className="session-note">{requiresManualSharedSignIn(activeService)
                 ? "Existing links are excluded. Profiles are added using the selected Flow session. Open each profile to complete sign-in; automatic sign-in is not yet verified for this service."
                 : "Existing links are excluded. After adding, Flowpilot opens each service, selects Google sign-in, and checks the result using its shared Flow session. No fresh Google password login is attempted."}</p>
               {addAccountError && <p className="dialog-error" role="alert">{addAccountError}</p>}
@@ -1038,7 +1028,7 @@ export default function App() {
                 <button className="secondary" onClick={() => setBulkShareOpen(false)}>Cancel</button>
                 <button className="primary" disabled={!bulkShareSelected.length || bulkShareRunning}
                   onClick={() => void createBulkSharedProfiles()}>
-                  {bulkShareRunning ? "Saving…" : `${activeService === "gemini" || activeService === "suno" ? "Add" : "Add & sign in"} ${bulkShareSelected.length} profiles`}
+                  {bulkShareRunning ? "Saving…" : `${requiresManualSharedSignIn(activeService) ? "Add" : "Add & sign in"} ${bulkShareSelected.length} profiles`}
                 </button>
               </div>
             </div>
@@ -1132,13 +1122,15 @@ function Sidebar({
     <aside>
       <Brand />
       <div className="side-label">Workspace</div>
-      {(Object.keys(SERVICES) as ServiceId[]).map((id) => <button key={id}
-        className={(view === "accounts" || view === "flow") && activeService === id ? "active" : ""}
-        aria-current={(view === "accounts" || view === "flow") && activeService === id ? "page" : undefined}
-        disabled={disabled} title={SERVICES[id].name} onClick={() => onService(id)}>
-        <img className="sidebar-service-logo" src={SERVICES[id].logo} alt="" />
-        <span>{SERVICES[id].shortName}</span><b className="service-count">{accounts.filter((a) => serviceOf(a) === id).length}</b>
-      </button>)}
+      <nav className="service-list" aria-label="Platforms">
+        {SERVICE_IDS.map((id) => <button key={id}
+          className={(view === "accounts" || view === "flow") && activeService === id ? "active" : ""}
+          aria-current={(view === "accounts" || view === "flow") && activeService === id ? "page" : undefined}
+          disabled={disabled} title={SERVICES[id].name} onClick={() => onService(id)}>
+          <img className="sidebar-service-logo" src={SERVICES[id].logo} alt="" />
+          <span>{SERVICES[id].shortName}</span><b className="service-count">{accounts.filter((a) => serviceOf(a) === id).length}</b>
+        </button>)}
+      </nav>
       <button disabled={disabled} className={view === "favorites" ? "active" : ""} title="Favorites" onClick={() => setView("favorites")}>
         <SidebarIcon name="favorites" /><span>Favorites</span>
       </button>

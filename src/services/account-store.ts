@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core"
+import { isServiceId, type ServiceId } from "./service-registry"
 
 export type StoredAccount = {
   id: string
@@ -10,12 +11,11 @@ export type StoredAccount = {
   order: number
   addedAt?: number
   lastOpenedAt?: number
-  service?: "flow" | "dola" | "leonardo" | "chatgpt" | "migoo" | "claude" | "gemini" | "suno"
+  service?: ServiceId
   flowSessionId?: string
 }
 
 const STORAGE_KEY = "flowpilot-accounts"
-const SERVICES = new Set(["flow", "dola", "leonardo", "chatgpt", "migoo", "claude", "gemini", "suno"])
 
 // Failure to clean up an obsolete browser cache must not turn a successful native write into a failed save.
 function removeLegacyCache() {
@@ -35,7 +35,7 @@ function isAccount(value: unknown): value is StoredAccount {
     Number.isFinite(account.order) &&
     (account.addedAt === undefined || (Number.isFinite(account.addedAt) && account.addedAt >= 0)) &&
     (account.lastOpenedAt === undefined || (Number.isFinite(account.lastOpenedAt) && account.lastOpenedAt >= 0)) &&
-    (account.service === undefined || SERVICES.has(account.service)) &&
+    (account.service === undefined || isServiceId(account.service)) &&
     (account.flowSessionId === undefined || (
       typeof account.flowSessionId === "string" &&
       /^[A-Za-z0-9_-]{1,128}$/.test(account.flowSessionId) &&
