@@ -8,6 +8,9 @@
         return true;
     };
     const icon = name => exact(document, 'flow-prompt-box-settings mat-icon', name)?.closest('button, [role="button"]');
+    const avatar = () => all(document, 'flow-header-user-icon, button[aria-label*="Google Account" i], button[aria-label*="Akun Google" i]')[0];
+    const creditPanel = () => all(document, 'flow-account-panel, [cdktrapfocus][role="dialog"]').find(panel =>
+        panel.matches('flow-account-panel') || panel.querySelector('span.credits-count'));
     const editor = document.querySelector('flow-rich-text-editor .ProseMirror[contenteditable="true"], .prosemirror-editor .ProseMirror[contenteditable="true"]');
     const settings = document.querySelector('flow-prompt-box-settings');
     const resultTiles = () => all(document, 'flow-a2ui-message-renderer flow-a2ui-video-option, flow-grid-tile-container')
@@ -21,24 +24,24 @@
     };
     switch (action) {
         case 'openCredits': {
-            const panel = document.querySelector('flow-account-panel');
+            const panel = creditPanel();
             if (visible(panel)) return true;
-            const avatar = document.querySelector('flow-header-user-icon');
-            return click(avatar?.querySelector('button, [role="button"]') || avatar);
+            const control = avatar();
+            return click(control?.querySelector('button, [role="button"]') || control);
         }
         case 'credits': {
-            const balance = document.querySelector('flow-account-panel span.credits-count');
+            const balance = creditPanel()?.querySelector('span.credits-count');
             const match = visible(balance) && (balance.innerText || '').trim().match(/^[0-9]+(?:[,.][0-9]{3})*/);
             return match ? Number(match[0].replace(/[,.]/g, '')) : null;
         }
         case 'closeCredits': {
-            const panel = document.querySelector('flow-account-panel');
+            const panel = creditPanel();
             return !visible(panel) || click(panel.querySelector('button.close-btn, button[aria-label="Close account panel"]'));
         }
-        case 'creditsClosed': return !visible(document.querySelector('flow-account-panel'));
+        case 'creditsClosed': return !creditPanel();
         case 'session':
             if (/^\/about\/?$/.test(location.pathname)) return 'login-required';
-            return visible(document.querySelector('flow-header-user-icon')) ? 'ready' : null;
+            return avatar() || visible(editor) || all(document, 'flow-projects-page > button[mat-fab][extended]').length ? 'ready' : null;
         case 'normalMode': {
             const panel = document.querySelector('flow-agent-panel');
             return !visible(panel) || click(panel.querySelector('.agent-panel-header .header-right button:nth-child(2)'));

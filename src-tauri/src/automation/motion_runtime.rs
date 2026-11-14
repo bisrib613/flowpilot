@@ -30,11 +30,15 @@ fn script(action: &str, value: Value) -> String {
     )
 }
 
-fn step(browser: &Browser, action: &str, value: Value) -> Result<(), AutomationError> {
-    browser.wait(&script(action, value), 30).map(|_| ()).map_err(|error| match error {
+fn wait_stage(browser: &Browser, action: &str, value: Value, timeout: u64) -> Result<Value, AutomationError> {
+    browser.wait(&script(action, value), timeout).map_err(|error| match error {
         AutomationError::Failed(message) => failed(format!("Flow step {action}: {message}")),
         other => other,
     })
+}
+
+fn step(browser: &Browser, action: &str, value: Value) -> Result<(), AutomationError> {
+    wait_stage(browser, action, value, 30).map(|_| ())
 }
 
 struct FlowSession<'a> {
@@ -55,7 +59,7 @@ impl FlowVideo for FlowSession<'_> {
             FLOW,
         )?;
         browser.wait_for_navigation()?;
-        let session = browser.wait(&script("session", Value::Null), 30)?;
+        let session = wait_stage(&browser, "session", Value::Null, 45)?;
         if session.as_str() == Some("login-required") {
             return Err(AutomationError::LoginRequired);
         }
@@ -114,7 +118,10 @@ impl FlowVideo for FlowSession<'_> {
                 step(&browser, "upload", Value::Null)?;
             }
             browser.upload("input[type=file]", path)?;
-            let asset = browser.wait(&script("asset", json!(name)), 60)?;
+            let asset = wait_stage(&browser, "asset", json!(name), 60).map_err(|error| match error {
+                AutomationError::Failed(message) => failed(format!("{message} ({name})")),
+                other => other,
+            })?;
             if asset.as_str() == Some("consent-required") {
                 return Err(failed("Open the selected Flow profile and approve Google's upload consent before retrying Motion Control"));
             }
