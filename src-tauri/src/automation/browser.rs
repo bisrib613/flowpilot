@@ -224,6 +224,7 @@ impl Browser {
         &self,
         path: &Path,
         click_upload: impl FnOnce() -> Result<(), AutomationError>,
+        upload_trace: &str,
     ) -> Result<(), AutomationError> {
         let path = local_file(path)?;
         let (events, pending) = mpsc::channel();
@@ -232,8 +233,26 @@ impl Browser {
             self.cdp("Page.enable", json!({}))?;
             self.intercept_file_chooser()?;
             click_upload()?;
-            let node = pending.recv_timeout(Duration::from_secs(25))
-                .map_err(|_| failed("Flow upload: the Upload button did not open a file chooser"))??;
+            let deadline = Instant::now() + Duration::from_secs(25);
+            let node = loop {
+                match pending.recv_timeout(Duration::from_millis(500)) {
+                    Ok(event) => break event?,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(failed("Flow upload: WebView2 chooser listener disconnected"));
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        let trace = self.eval(upload_trace)?;
+                        if trace["consent"] == true {
+                            return Err(failed("Flow upload: Google showed the upload consent dialog. Approve it in the selected Flow profile before retrying."));
+                        }
+                        if Instant::now() >= deadline {
+                            return Err(failed(format!(
+                                "Flow upload: WebView2 did not report a file chooser within 25 seconds; observed state: {trace}"
+                            )));
+                        }
+                    }
+                }
+            };
             self.cdp("DOM.setFileInputFiles", json!({"backendNodeId": node, "files": [path]}))
                 .map_err(|error| match error {
                     AutomationError::Failed(message) => failed(format!("Flow upload: could not set files on the chooser: {message}")),

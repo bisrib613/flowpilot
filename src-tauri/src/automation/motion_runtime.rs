@@ -134,6 +134,9 @@ impl FlowVideo for FlowSession<'_> {
                 step(&browser, "uploadMenuReady", Value::Null)?;
                 let point = wait_stage(&browser, "uploadTarget", Value::Null, 20)?;
                 browser.click_at(&point)
+            }, &script("uploadTrace", Value::Null)).map_err(|error| match error {
+                AutomationError::Failed(message) => failed(format!("{kind} upload ({filename}): {message}")),
+                other => other,
             })?;
             let asset = wait_stage(&browser, "asset", json!({"names": aliases, "kind": kind}), 60).map_err(|error| match error {
                 AutomationError::Failed(message) => failed(format!("{message} ({name})")),

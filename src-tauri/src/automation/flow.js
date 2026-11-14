@@ -101,8 +101,25 @@
             const labeled = all(document, '[role="menu"].add-menu button')
                 .filter(button => labels(button).some(label => /^(upload|upload media|unggah media)$/i.test(label)));
             const candidates = structural.length ? structural : labeled;
-            return candidates.length === 1 ? controlPoint(candidates[0]) : null;
+            if (candidates.length !== 1) return null;
+            const button = candidates[0];
+            const point = controlPoint(button);
+            if (!point) return null;
+            const trace = {click: 'none'};
+            window.__flowpilotUploadTrace = trace;
+            button.addEventListener('click', event => {
+                trace.click = event.isTrusted ? 'trusted' : 'synthetic';
+            }, {capture: true, once: true});
+            return point;
         }
+        case 'uploadTrace':
+            return {
+                click: window.__flowpilotUploadTrace?.click || 'none',
+                consent: visible(document.querySelector('flow-upload-consent-dialog')),
+                menuOpen: visible(document.querySelector('[role="menu"].add-menu')),
+                visibility: document.visibilityState,
+                focused: document.hasFocus()
+            };
         case 'submitTarget': {
             const buttons = all(document, 'flow-base-prompt-box button[aria-label]')
                 .filter(button => /^(Start generation|Mulai pembuatan)$/i.test(button.getAttribute('aria-label')));
