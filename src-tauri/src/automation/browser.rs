@@ -11,8 +11,8 @@ use std::{
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
-use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
-use windows::core::PCWSTR;
+use webview2_com::{take_pwstr, CallDevToolsProtocolMethodCompletedHandler, DevToolsProtocolEventReceivedEventHandler};
+use windows::core::{PCWSTR, PWSTR};
 
 use super::AutomationError;
 
@@ -225,6 +225,74 @@ impl Browser {
             json!({"enabled": true}),
         )
         .map(|_| ())
+    }
+
+    pub(super) fn upload_from_chooser(
+        &self,
+        path: &Path,
+        click_upload: impl FnOnce() -> Result<(), AutomationError>,
+    ) -> Result<(), AutomationError> {
+        let path = local_file(path)?;
+        let (events, pending) = mpsc::channel();
+        let token = self.chooser_listener(Some(events), 0)?;
+        let result = (|| {
+            self.intercept_file_chooser()?;
+            click_upload()?;
+            let node = pending.recv_timeout(Duration::from_secs(25))
+                .map_err(|_| failed("Flow upload: the Upload button did not open a file chooser"))??;
+            self.cdp("DOM.setFileInputFiles", json!({"backendNodeId": node, "files": [path]}))
+                .map_err(|error| match error {
+                    AutomationError::Failed(message) => failed(format!("Flow upload: could not set files on the chooser: {message}")),
+                    other => other,
+                })?;
+            Ok(())
+        })();
+        let remove = self.chooser_listener(None, token).map(|_| ());
+        result.and(remove)
+    }
+
+    fn chooser_listener(
+        &self,
+        events: Option<mpsc::Sender<Result<u64, AutomationError>>>,
+        mut token: i64,
+    ) -> Result<i64, AutomationError> {
+        let app = self.app.clone();
+        let label = self.label.clone();
+        let (done, result) = mpsc::channel();
+        Self::dispatch(&self.app, move || {
+            let window = app.get_webview_window(&label)
+                .ok_or_else(|| failed("Automation window closed"))?;
+            window.with_webview(move |platform| {
+                let registration = (|| {
+                    let native = unsafe { platform.controller().CoreWebView2() }.map_err(failed)?;
+                    let event: Vec<u16> = "Page.fileChooserOpened".encode_utf16().chain([0]).collect();
+                    let receiver = unsafe { native.GetDevToolsProtocolEventReceiver(PCWSTR(event.as_ptr())) }
+                        .map_err(failed)?;
+                    if let Some(events) = events {
+                        let callback = DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_, args| {
+                            let node = (|| {
+                                let args = args.ok_or_else(|| failed("File chooser did not supply event arguments"))?;
+                                let mut raw = PWSTR::null();
+                                unsafe { args.ParameterObjectAsJson(&mut raw) }.map_err(failed)?;
+                                let data: Value = serde_json::from_str(&take_pwstr(raw)).map_err(failed)?;
+                                data["backendNodeId"].as_u64().filter(|id| *id > 0)
+                                    .ok_or_else(|| failed("Flow file chooser did not identify its file input"))
+                            })();
+                            let _ = events.send(node);
+                            Ok(())
+                        }));
+                        unsafe { receiver.add_DevToolsProtocolEventReceived(&callback, &mut token) }
+                            .map_err(failed)?;
+                    } else {
+                        unsafe { receiver.remove_DevToolsProtocolEventReceived(token) }.map_err(failed)?;
+                    }
+                    Ok(token)
+                })();
+                let _ = done.send(registration);
+            }).map_err(failed)
+        })?;
+        result.recv_timeout(Duration::from_secs(20))
+            .map_err(|_| failed("Timed out registering Flow's file chooser listener"))?
     }
 
     pub(super) fn insert_text(&self, text: &str) -> Result<(), AutomationError> {

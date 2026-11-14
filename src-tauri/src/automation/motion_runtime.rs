@@ -115,7 +115,6 @@ impl FlowVideo for FlowSession<'_> {
             }
         }
         step(&browser, "closeSettings", Value::Null)?;
-        browser.intercept_file_chooser()?;
         let mut assets = [None, None];
         for reference in request.references {
             let (index, kind, path) = match reference {
@@ -128,11 +127,10 @@ impl FlowVideo for FlowSession<'_> {
             let filename = path.file_name().and_then(|value| value.to_str())
                 .ok_or(AutomationError::InvalidInput("Reference filename is invalid"))?;
             let aliases = [filename, name];
-            if browser.eval(&script("uploadInput", Value::Null))? != Value::Bool(true) {
+            browser.upload_from_chooser(path, || {
                 step(&browser, "add", Value::Null)?;
-                step(&browser, "upload", Value::Null)?;
-            }
-            browser.upload("input[type=file]", path)?;
+                step(&browser, "upload", Value::Null)
+            })?;
             let asset = wait_stage(&browser, "asset", json!({"names": aliases, "kind": kind}), 60).map_err(|error| match error {
                 AutomationError::Failed(message) => failed(format!("{message} ({name})")),
                 other => other,

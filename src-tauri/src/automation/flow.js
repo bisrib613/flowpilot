@@ -53,7 +53,6 @@
             return !visible(panel) || click(panel.querySelector('.agent-panel-header .header-right button:nth-child(2)'));
         }
         case 'normalReady': return !visible(document.querySelector('flow-agent-panel'));
-        case 'uploadInput': return !!document.querySelector('input[type=file]');
         case 'project':
             return !!editor || click(document.querySelector('flow-projects-page > button[mat-fab][extended]:has(mat-icon)'));
         case 'settings':
