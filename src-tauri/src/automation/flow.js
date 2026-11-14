@@ -61,7 +61,7 @@
             }));
         }
         case 'mentions': return !!editor && editor.querySelectorAll('[contenteditable="false"]').length >= data;
-        case 'submitReady': return !!editor && editor.innerText.includes(data);
+        case 'submitReady': return !!editor && (!!editor.innerText.trim() || !!editor.querySelector('[contenteditable="false"]'));
         case 'links': return videoLinks();
         case 'result': {
             const fresh = videoLinks().filter(url => !data.includes(url));

@@ -1,3 +1,4 @@
+import defaultPrompt from "../../src-tauri/src/automation/motion-default.txt?raw"
 import FFmpegStatus from "./FFmpegStatus"
 import { convertFileSrc, invoke } from "@tauri-apps/api/core"
 import { useState } from "react"
@@ -17,6 +18,7 @@ export default function MotionControl({ profiles }: { profiles: Profile[] }) {
   const [output, setOutput] = useState("")
   const [ffmpegReady, setFfmpegReady] = useState(false)
   const [videoError, setVideoError] = useState(false)
+  const [hardprompt, setHardprompt] = useState(true)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState("")
 
@@ -44,6 +46,7 @@ export default function MotionControl({ profiles }: { profiles: Profile[] }) {
         const result = await invoke<string>("generate_motion", { input: {
           profileId, profileOrder,
           prompt: fields.get("prompt"),
+          useHardprompt: hardprompt,
           aspectRatio: fields.get("ratio"),
           preserveAudio: fields.has("audio"),
           characterImage, motionVideo, output,
@@ -64,8 +67,16 @@ export default function MotionControl({ profiles }: { profiles: Profile[] }) {
             <FileField label="Motion video" path={motionVideo} onChoose={() => void choose("video", path => { setVideoError(false); setMotionVideo(path) })} />
             {motionVideo && <video key={motionVideo} className="motion-preview" src={convertFileSrc(motionVideo)} controls preload="metadata" aria-label="Motion reference preview" onError={() => setVideoError(true)} />}
             {videoError && <p className="dialog-error" role="status">This video format or codec could not be previewed in WebView2.</p>}
-            <label className="motion-field">Prompt
-              <textarea name="prompt" required rows={5} placeholder="Describe how the character should follow the reference." />
+            <label className="motion-checkbox">
+              <input type="checkbox" checked={hardprompt} onChange={event => setHardprompt(event.target.checked)} />
+              Use hardprompt
+            </label>
+            {hardprompt && <details>
+              <summary>View default prompt</summary>
+              <p className="motion-default-prompt">{defaultPrompt.trim()}</p>
+            </details>}
+            <label className="motion-field">{hardprompt ? "Additional instructions (optional)" : "Prompt"}
+              <textarea name="prompt" required={!hardprompt} rows={5} placeholder={hardprompt ? "Add instructions for the default prompt." : "Write the full prompt. Use @video and @image to mention the reference files."} />
             </label>
           </section>
           <section className="motion-card">

@@ -19,3 +19,6 @@ pub(crate) enum AutomationError {
     // A request may have been accepted. Check the platform before retrying.
     SubmissionUnconfirmed,
 }
+
+#[cfg(windows)]
+mod motion_prompt;

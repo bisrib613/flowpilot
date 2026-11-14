@@ -111,17 +111,27 @@ impl FlowVideo for FlowSession<'_> {
             names.push(name);
         }
         let previous = browser.eval(&script("links", Value::Null))?;
-        for name in &names {
-            step(&browser, "focus", Value::Null)?;
+        let mut mentions = 0;
+        step(&browser, "focus", Value::Null)?;
+        for part in super::motion_prompt::parts(request.prompt) {
+            let index = match part {
+                super::motion_prompt::Part::Text(text) => {
+                    browser.insert_text(text)?;
+                    continue;
+                }
+                super::motion_prompt::Part::Video => 0,
+                super::motion_prompt::Part::Image => 1,
+            };
+            let name = names.get(index).ok_or_else(|| failed("Motion reference missing"))?;
             browser.insert_text("@")?;
             step(&browser, "mentionSearch", Value::Null)?;
             browser.insert_text(name)?;
             step(&browser, "mentionSelect", json!(name))?;
+            mentions += 1;
+            step(&browser, "mentions", json!(mentions))?;
+            step(&browser, "focus", Value::Null)?;
         }
-        step(&browser, "mentions", json!(names.len()))?;
-        step(&browser, "focus", Value::Null)?;
-        browser.insert_text(&format!(" {}", request.prompt))?;
-        step(&browser, "submitReady", json!(request.prompt))?;
+        step(&browser, "submitReady", Value::Null)?;
         browser
             .enter()
             .map_err(|_| AutomationError::SubmissionUnconfirmed)?;
@@ -283,13 +293,16 @@ pub(crate) struct MotionInput {
     motion_video: PathBuf,
     output: PathBuf,
     prompt: String,
+    #[serde(default = "super::motion_prompt::enabled")]
+    use_hardprompt: bool,
     aspect_ratio: String,
     preserve_audio: bool,
 }
 
 pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> {
-    if input.prompt.trim().is_empty() || !matches!(input.aspect_ratio.as_str(), "9:16" | "16:9") {
-        return Err("A prompt and a supported aspect ratio are required".into());
+    let prompt = super::motion_prompt::compose(&input.prompt, input.use_hardprompt)?;
+    if !matches!(input.aspect_ratio.as_str(), "9:16" | "16:9") {
+        return Err("Select a supported aspect ratio".into());
     }
     let mut profiles = input.profile_order;
     profiles.retain(|profile| profile != &input.profile_id);
@@ -340,7 +353,7 @@ pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> 
         &mut Ffmpeg(&folder, binary),
         MotionControlRequest {
             profile_ids: &profiles,
-            prompt: input.prompt.trim(),
+            prompt: &prompt,
             model: "Omni 1.1 Flash",
             aspect_ratio: &input.aspect_ratio,
             character_image: &image,
