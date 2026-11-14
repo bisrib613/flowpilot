@@ -142,18 +142,20 @@ impl FlowVideo for FlowSession<'_> {
             let display_name = asset.as_str().ok_or_else(|| failed("Flow did not identify the uploaded reference"))?;
             assets[index] = Some((display_name.to_owned(), aliases));
         }
-        browser.eval(&script("beforeSubmit", Value::Null))?;
+        let mut prompt_body = String::new();
         let mut mention_counts = [0, 0];
         step(&browser, "focus", Value::Null)?;
         for part in super::motion_prompt::parts(request.prompt) {
             let index = match part {
                 super::motion_prompt::Part::Text(text) => {
                     browser.insert_text(text)?;
+                    prompt_body.push_str(text);
                     continue;
                 }
                 super::motion_prompt::Part::Video => 0,
                 super::motion_prompt::Part::Image => 1,
             };
+            prompt_body.push(' ');
             let (_display_name, aliases) = assets[index].as_ref().ok_or_else(|| failed("Motion reference missing"))?;
             browser.insert_text("@")?;
             step(&browser, "mentionSearch", Value::Null)?;
@@ -166,17 +168,23 @@ impl FlowVideo for FlowSession<'_> {
         let expected = assets.iter().zip(mention_counts).filter_map(|(asset, count)| {
             asset.as_ref().filter(|_| count > 0).map(|(_, aliases)| json!({"names": aliases, "count": count}))
         }).collect::<Vec<_>>();
-        step(&browser, "verifyMentions", json!(expected))?;
-        step(&browser, "submitReady", Value::Null)?;
-        browser
-            .enter()
-            .map_err(|_| AutomationError::SubmissionUnconfirmed)?;
-        let result = browser
-            .wait(&script("result", Value::Null), 600)
-            .map_err(|_| AutomationError::SubmissionUnconfirmed)?;
-        let url = result
-            .as_str()
-            .ok_or_else(|| failed("Google Flow reported a generation error"))?;
+        step(&browser, "submitReady", json!({"body": prompt_body, "mentions": expected}))?;
+        let previous = browser.eval(&script("beforeSubmit", Value::Null))?;
+        step(&browser, "focus", Value::Null)?;
+        browser.enter().map_err(|_| AutomationError::SubmissionUnconfirmed)?;
+        let submitted = browser.wait(&script("submission", previous.clone()), 30)
+            .map_err(|_| failed("Flow did not confirm that generation started after Enter. Check the project before retrying."))?;
+        let result = if submitted["status"] == "pending" {
+            browser.wait(&script("result", previous), 600)
+                .map_err(|_| failed("Flow started generation but did not expose a result within 10 minutes. Check the project before retrying."))?
+        } else {
+            submitted
+        };
+        let url = match result["status"].as_str() {
+            Some("complete") => result["url"].as_str().ok_or_else(|| failed("Flow result did not contain a video URL"))?,
+            Some("ambiguous") => return Err(failed("Flow returned multiple candidate videos for this segment")),
+            _ => return Err(failed("Google Flow reported a generation error")),
+        };
         let target = self.folder.join(format!("clip-{}.mp4", Uuid::new_v4()));
         let client = reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::custom(|attempt| {

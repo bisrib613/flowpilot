@@ -130,16 +130,32 @@
         }
         case 'mentionAttached':
             return !visible(document.querySelector('#add-menu-input')) && hasMention(data.names, data.count);
-        case 'verifyMentions': return data.every(mention => hasMention(mention.names, mention.count));
-        case 'submitReady': return !!editor && (!!editor.innerText.trim() || !!editor.querySelector('[contenteditable="false"]'));
+        case 'submitReady': {
+            if (!visible(editor) || visible(document.querySelector('#add-menu-input'))) return false;
+            const normalize = text => text.replace(/[\u200B\uFEFF]/g, '').replace(/\s+/gu, ' ').trim();
+            // Read rendered text with inline mention chips removed. Keep block breaks.
+            const text = node => {
+                if (node.nodeType === 3) return node.nodeValue || '';
+                if (node.nodeType !== 1 || node.matches('[contenteditable="false"]')) return ' ';
+                if (node.tagName === 'BR') return ' ';
+                const content = [...node.childNodes].map(text).join('');
+                return /^(DIV|P|LI)$/.test(node.tagName) ? ' ' + content + ' ' : content;
+            };
+            return normalize(text(editor)) === normalize(data.body)
+                && data.mentions.every(mention => hasMention(mention.names, mention.count));
+        }
         case 'beforeSubmit':
             resultTiles().forEach(tile => tile.setAttribute('data-flowpilot-previous', ''));
-            return true;
+            return [...new Set(resultTiles().map(videoUrl).filter(Boolean))];
+        case 'submission':
         case 'result': {
             const newTiles = resultTiles().filter(tile => !tile.hasAttribute('data-flowpilot-previous'));
-            const urls = [...new Set(newTiles.map(videoUrl).filter(Boolean))];
-            if (urls.length === 1) return urls[0];
-            if (newTiles.some(tile => tile.querySelector('.error-tile, flow-error-tile, .error-message-text'))) return {error: true};
+            const urls = [...new Set(newTiles.map(videoUrl).filter(url => url && !data.includes(url)))];
+            if (urls.length === 1) return {status: 'complete', url: urls[0]};
+            if (urls.length > 1) return {status: 'ambiguous'};
+            const hasState = (tile, selector) => tile.matches(selector) || !!tile.querySelector(selector);
+            if (newTiles.some(tile => hasState(tile, '.error-tile, flow-error-tile, .error-message-text'))) return {status: 'error'};
+            if (action === 'submission' && newTiles.some(tile => hasState(tile, 'flow-pending-tile, .loading-percentage, .progress-bar, [role="progressbar"]'))) return {status: 'pending'};
             return null;
         }
         default: throw Error('Unknown Flow action');
