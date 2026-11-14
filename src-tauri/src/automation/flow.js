@@ -10,8 +10,15 @@
     const icon = name => exact(document, 'flow-prompt-box-settings mat-icon', name)?.closest('button, [role="button"]');
     const editor = document.querySelector('flow-rich-text-editor .ProseMirror[contenteditable="true"], .prosemirror-editor .ProseMirror[contenteditable="true"]');
     const settings = document.querySelector('flow-prompt-box-settings');
-    const videoLinks = () => [...new Set([...document.querySelectorAll('video, video source')].map(el => el.currentSrc || el.src)
-        .filter(src => { try { const url = new URL(src); return url.protocol === 'https:' && url.hostname === 'flow-content.google' && url.pathname.startsWith('/video/'); } catch { return false; } }))];
+    const resultTiles = () => all(document, 'flow-a2ui-message-renderer flow-a2ui-video-option, flow-grid-tile-container')
+        .filter(tile => !tile.hasAttribute('data-flowpilot-reference'));
+    const videoUrl = tile => {
+        const media = tile.querySelector('video[src], video source[src]');
+        try {
+            const url = new URL(media?.currentSrc || media?.src);
+            return url.protocol === 'https:' && url.hostname === 'flow-content.google' && url.pathname.startsWith('/video/') ? url.href : null;
+        } catch { return null; }
+    };
     switch (action) {
         case 'openCredits': {
             const panel = document.querySelector('flow-account-panel');
@@ -29,7 +36,14 @@
             return !visible(panel) || click(panel.querySelector('button.close-btn, button[aria-label="Close account panel"]'));
         }
         case 'creditsClosed': return !visible(document.querySelector('flow-account-panel'));
-        case 'loginRequired': return /(^|\/)about\/?$/.test(location.pathname);
+        case 'session':
+            if (/^\/about\/?$/.test(location.pathname)) return 'login-required';
+            return visible(document.querySelector('flow-header-user-icon')) ? 'ready' : null;
+        case 'normalMode': {
+            const panel = document.querySelector('flow-agent-panel');
+            return !visible(panel) || click(panel.querySelector('.agent-panel-header .header-right button:nth-child(2)'));
+        }
+        case 'normalReady': return !visible(document.querySelector('flow-agent-panel'));
         case 'uploadInput': return !!document.querySelector('input[type=file]');
         case 'project':
             return !!editor || click(document.querySelector('flow-projects-page > button[mat-fab][extended]:has(mat-icon)'));
@@ -43,8 +57,18 @@
             return !visible(settings) || click(document.querySelector('flow-base-prompt-box button.settings-trigger-button'));
         case 'add': return !!document.querySelector('[role="menu"].add-menu') || click(document.querySelector('header .header-right-container button:first-child'));
         case 'upload': return click(document.querySelector('[role="menu"].add-menu flow-menu-item[xapfileselectortrigger] button[mat-menu-item]'));
-        case 'asset': return all(document, 'flow-grid-tile-container').some(tile =>
-            (tile.innerText + ' ' + (tile.getAttribute('aria-label') || '')).includes(data));
+        case 'asset': {
+            if (visible(document.querySelector('flow-upload-consent-dialog'))) return 'consent-required';
+            const tiles = all(document, 'flow-grid-tile-container').filter(tile =>
+                (tile.innerText + ' ' + (tile.getAttribute('aria-label') || '')).includes(data));
+            if (tiles.length !== 1) return null;
+            const tile = tiles[0];
+            tile.setAttribute('data-flowpilot-reference', '');
+            const video = tile.querySelector('video');
+            const image = tile.querySelector('img[src]');
+            return video ? !!(video.currentSrc || video.src || video.querySelector('source[src]'))
+                : !!(image?.complete && image.naturalWidth);
+        }
         case 'focus': if (!editor) return false; editor.focus(); return true;
         case 'mentionSearch': {
             const input = document.querySelector('#add-menu-input');
@@ -62,11 +86,14 @@
         }
         case 'mentions': return !!editor && editor.querySelectorAll('[contenteditable="false"]').length >= data;
         case 'submitReady': return !!editor && (!!editor.innerText.trim() || !!editor.querySelector('[contenteditable="false"]'));
-        case 'links': return videoLinks();
+        case 'beforeSubmit':
+            resultTiles().forEach(tile => tile.setAttribute('data-flowpilot-previous', ''));
+            return true;
         case 'result': {
-            const fresh = videoLinks().filter(url => !data.includes(url));
-            if (fresh.length === 1) return fresh[0];
-            if (all(document, 'flow-error-tile, .error-tile, .error-message-text').length) return {error: true};
+            const newTiles = resultTiles().filter(tile => !tile.hasAttribute('data-flowpilot-previous'));
+            const urls = [...new Set(newTiles.map(videoUrl).filter(Boolean))];
+            if (urls.length === 1) return urls[0];
+            if (newTiles.some(tile => tile.querySelector('.error-tile, flow-error-tile, .error-message-text'))) return {error: true};
             return null;
         }
         default: throw Error('Unknown Flow action');

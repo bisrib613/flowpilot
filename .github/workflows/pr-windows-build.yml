@@ -30,7 +30,7 @@ jobs:
       - name: Set PR-only installer version (v1.3.2 feature integration)
         shell: pwsh
         run: |
-          $version = "1.5.29"
+          $version = "1.5.30"
           npm version $version --no-git-tag-version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

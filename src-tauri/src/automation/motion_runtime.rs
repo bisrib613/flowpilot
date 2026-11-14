@@ -31,7 +31,10 @@ fn script(action: &str, value: Value) -> String {
 }
 
 fn step(browser: &Browser, action: &str, value: Value) -> Result<(), AutomationError> {
-    browser.wait(&script(action, value), 30).map(|_| ())
+    browser.wait(&script(action, value), 30).map(|_| ()).map_err(|error| match error {
+        AutomationError::Failed(message) => failed(format!("Flow step {action}: {message}")),
+        other => other,
+    })
 }
 
 struct FlowSession<'a> {
@@ -51,7 +54,9 @@ impl FlowVideo for FlowSession<'_> {
             "https://flow.google.com/",
             FLOW,
         )?;
-        if browser.eval(&script("loginRequired", Value::Null))? == Value::Bool(true) {
+        browser.wait_for_navigation()?;
+        let session = browser.wait(&script("session", Value::Null), 30)?;
+        if session.as_str() == Some("login-required") {
             return Err(AutomationError::LoginRequired);
         }
         step(&browser, "openCredits", Value::Null)?;
@@ -76,6 +81,8 @@ impl FlowVideo for FlowSession<'_> {
         step(&browser, "closeCredits", Value::Null)?;
         step(&browser, "creditsClosed", Value::Null)?;
         step(&browser, "project", Value::Null)?;
+        step(&browser, "normalMode", Value::Null)?;
+        step(&browser, "normalReady", Value::Null)?;
         step(&browser, "focus", Value::Null)?;
         step(&browser, "settings", Value::Null)?;
         step(&browser, "mode", json!("videocam"))?;
@@ -107,10 +114,13 @@ impl FlowVideo for FlowSession<'_> {
                 step(&browser, "upload", Value::Null)?;
             }
             browser.upload("input[type=file]", path)?;
-            step(&browser, "asset", json!(name))?;
+            let asset = browser.wait(&script("asset", json!(name)), 60)?;
+            if asset.as_str() == Some("consent-required") {
+                return Err(failed("Open the selected Flow profile and approve Google's upload consent before retrying Motion Control"));
+            }
             names.push(name);
         }
-        let previous = browser.eval(&script("links", Value::Null))?;
+        browser.eval(&script("beforeSubmit", Value::Null))?;
         let mut mentions = 0;
         step(&browser, "focus", Value::Null)?;
         for part in super::motion_prompt::parts(request.prompt) {
@@ -136,19 +146,31 @@ impl FlowVideo for FlowSession<'_> {
             .enter()
             .map_err(|_| AutomationError::SubmissionUnconfirmed)?;
         let result = browser
-            .wait(&script("result", previous), 600)
+            .wait(&script("result", Value::Null), 600)
             .map_err(|_| AutomationError::SubmissionUnconfirmed)?;
         let url = result
             .as_str()
             .ok_or_else(|| failed("Google Flow reported a generation error"))?;
         let target = self.folder.join(format!("clip-{}.mp4", Uuid::new_v4()));
         let client = reqwest::blocking::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                let url = attempt.url();
+                if attempt.previous().len() >= 5 {
+                    attempt.error("Too many redirects while downloading the Flow result")
+                } else if url.scheme() == "https" && url.host_str().is_some_and(|host|
+                    host == "flow-content.google" || host == "storage.googleapis.com" || host.ends_with(".googlevideo.com")
+                ) {
+                    attempt.follow()
+                } else {
+                    attempt.error("Unexpected Flow download destination")
+                }
+            }))
             .timeout(std::time::Duration::from_secs(180))
             .build()
             .map_err(failed)?;
         let mut response = client
             .get(url)
+            .header(reqwest::header::REFERER, "https://flow.google.com/")
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
             .map_err(failed)?;
@@ -366,6 +388,10 @@ pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> 
         Err(motion_control::MotionControlError::Generate {
             segment, completed_clips, source: AutomationError::ProfilesExhausted
         }) => Err(format!("Flow profiles ran out of credits before segment {segment}. {} completed clip(s) kept in {}", completed_clips.len(), folder.display())),
+        Err(motion_control::MotionControlError::Generate { segment, completed_clips, source: AutomationError::LoginRequired }) => Err(format!(
+            "Google Flow requests sign-in for segment {segment}. Open the selected Flow profile and confirm it reaches the Projects page, then retry. {} completed clip(s) kept in {}.",
+            completed_clips.len(), folder.display()
+        )),
         Err(error) => Err(format!("{error:?}. Working folder: {}", folder.display())),
     }
 }

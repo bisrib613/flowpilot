@@ -102,6 +102,27 @@ impl Browser {
             })?
     }
 
+    pub(super) fn wait_for_navigation(&self) -> Result<(), AutomationError> {
+        let deadline = Instant::now() + Duration::from_secs(35);
+        loop {
+            let app = self.app.clone();
+            let label = self.label.clone();
+            let url = Self::dispatch(&self.app, move || {
+                app.get_webview_window(&label)
+                    .ok_or_else(|| failed("Automation window closed"))?
+                    .url().map_err(failed)
+            })?;
+            match url.host_str() {
+                Some(host) if url.scheme() == "https" && self.hosts.contains(&host) => return Ok(()),
+                Some("accounts.google.com") if url.scheme() == "https" => {
+                    return Err(AutomationError::LoginRequired);
+                }
+                _ if Instant::now() < deadline => thread::sleep(Duration::from_millis(350)),
+                _ => return Err(failed("Automation page did not reach the expected service")),
+            }
+        }
+    }
+
     fn cdp(&self, method: &'static str, params: Value) -> Result<Value, AutomationError> {
         let app = self.app.clone();
         let label = self.label.clone();
@@ -114,7 +135,11 @@ impl Browser {
             let url = window.url().map_err(failed)?;
             if url.scheme() != "https" || !url.host_str().is_some_and(|host| hosts.contains(&host))
             {
-                return Err(AutomationError::LoginRequired);
+                return Err(if url.scheme() == "https" && url.host_str() == Some("accounts.google.com") {
+                    AutomationError::LoginRequired
+                } else {
+                    failed("Automation navigated away from the expected service")
+                });
             }
             let errors = sender.clone();
             window
