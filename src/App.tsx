@@ -1,3 +1,4 @@
+import FFmpegStatus from "./components/FFmpegStatus"
 import MotionControl from "./components/MotionControl"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react"
 import { getVersion } from "@tauri-apps/api/app"
@@ -17,7 +18,7 @@ import { generateIndonesianName } from "./services/signup-name"
 import { availableSharedSources, defaultSortDirection, PROFILE_SORT_OPTIONS, readProfileSort, sortProfileCards, type ProfileSort, type ProfileSortKey } from "./services/profile-features"
 import { SERVICES, SERVICE_IDS, requiresManualSharedSignIn, type ServiceId } from "./services/service-registry"
 
-type AppView = "accounts" | "favorites" | "settings" | "flow" | "prompts"
+type AppView = "accounts" | "favorites" | "settings" | "flow" | "prompts" | "motion"
 type BookmarkServiceId = "flow" | "chatgpt" | "gemini"
 type ServiceBookmark = {
   id: string
@@ -719,6 +720,14 @@ export default function App() {
     return () => document.removeEventListener("click", dismiss)
   }, [menu])
   useDialogFocus(Boolean(dialog || addAccountOpen || bulkShareOpen), dialogReturnFocus)
+  if (view === "motion") return (
+    <div className="app">
+      <Sidebar view={view} setView={setView} accounts={accounts} activeService={activeService} onService={selectService} />
+      <main className="content motion-page">
+        <MotionControl profiles={sortProfileCards(accounts.filter(account => serviceOf(account) === "flow"), sortByService.flow)} />
+      </main>
+    </div>
+  )
   if (view === "prompts") return (
     <div className="app">
       <Sidebar view={view} setView={setView} accounts={accounts} activeService={activeService} onService={selectService} />
@@ -905,9 +914,8 @@ export default function App() {
         {view === "settings" ? (
           <>
           <nav className="settings-tabs" aria-label="Settings sections">
-            {["general", "motion", "updates", "help"].map((tab) => <button key={tab} className={settingsTab === tab ? "active" : ""} aria-pressed={settingsTab === tab} onClick={() => setSettingsTab(tab)}>{tab === "help" ? "Help & info" : tab === "motion" ? "Motion Control" : tab[0].toUpperCase() + tab.slice(1)}</button>)}
+            {["general", "dependencies", "updates", "help"].map((tab) => <button key={tab} className={settingsTab === tab ? "active" : ""} aria-pressed={settingsTab === tab} onClick={() => setSettingsTab(tab)}>{tab === "help" ? "Help & info" : tab[0].toUpperCase() + tab.slice(1)}</button>)}
           </nav>
-          <div hidden={settingsTab !== "motion"}><MotionControl profiles={accounts.filter(account => serviceOf(account) === "flow")} /></div>
           {settingsTab === "general" ? <>
           <DownloadSettings />
           <GoogleReLoginSettings onEnabled={() => void checkAllFlowProfiles()} />
@@ -927,7 +935,9 @@ export default function App() {
             clearingAllCaches={clearingAllCaches}
             onClearAllCaches={() => void handleClearAllAccountCaches()}
           />
-          </> : settingsTab === "updates" ? <UpdatesPage /> : settingsTab === "help" ? <InfoPage /> : null}
+          </> : settingsTab === "dependencies" ? (
+            <section className="preload-setting"><h2>Dependencies</h2><FFmpegStatus /></section>
+          ) : settingsTab === "updates" ? <UpdatesPage /> : <InfoPage />}
           </>
         ) : (
           <>
@@ -1133,6 +1143,10 @@ function Sidebar({
           <span>{SERVICES[id].shortName}</span><b className="service-count">{accounts.filter((a) => serviceOf(a) === id).length}</b>
         </button>)}
       </nav>
+      <button disabled={disabled} className={view === "motion" ? "active" : ""} aria-current={view === "motion" ? "page" : undefined} title="Motion Control" aria-label="Motion Control" onClick={() => setView("motion")}>
+        <svg className="sidebar-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3" /><path d="m10 9 5 3-5 3Z" strokeLinejoin="round" /></svg>
+        <span>Motion Control</span>
+      </button>
       <button disabled={disabled} className={view === "favorites" ? "active" : ""} title="Favorites" onClick={() => setView("favorites")}>
         <SidebarIcon name="favorites" /><span>Favorites</span>
       </button>

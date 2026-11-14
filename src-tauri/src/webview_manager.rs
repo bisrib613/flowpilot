@@ -1363,11 +1363,11 @@ mod preload_tests {
 }
 
 #[cfg(windows)]
-pub(crate) fn automation_profile_directory(
+pub(crate) fn validate_automation_profile(
     app: &AppHandle,
     service: &str,
     account: &str,
-) -> Result<(PathBuf, Option<String>), String> {
+) -> Result<serde_json::Value, String> {
     let accounts = crate::account_store::load_accounts(app.clone())?
         .ok_or("No profiles are saved")?;
     let exists = accounts.as_array().is_some_and(|rows| rows.iter().any(|row| {
@@ -1375,6 +1375,16 @@ pub(crate) fn automation_profile_directory(
             && row.get("service").and_then(|value| value.as_str()).unwrap_or("flow") == service
     }));
     if !exists { return Err("The selected profile does not exist for this service".into()); }
+    Ok(accounts)
+}
+
+#[cfg(windows)]
+pub(crate) fn automation_profile_directory(
+    app: &AppHandle,
+    service: &str,
+    account: &str,
+) -> Result<(PathBuf, Option<String>), String> {
+    let accounts = validate_automation_profile(app, service, account)?;
     let key = session_key_from_accounts(&accounts, service, account)?;
     let args = if key.starts_with("flow-") {
         let state = app.state::<WebviewManager>();

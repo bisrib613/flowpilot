@@ -8,6 +8,8 @@
   "permissions": [
     "core:default",
     "allow-choose-motion-file",
+    "allow-ffmpeg-status",
+    "allow-install-ffmpeg",
     "allow-generate-motion",
     "updater:default",
     "process:allow-restart",

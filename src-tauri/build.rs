@@ -3,6 +3,8 @@ fn main() {
         tauri_build::Attributes::new().app_manifest(
             tauri_build::AppManifest::new().commands(&[
                 "choose_motion_file",
+                "ffmpeg_status",
+                "install_ffmpeg",
                 "generate_motion",
                 "get_download_folder",
                 "choose_download_folder",

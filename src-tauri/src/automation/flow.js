@@ -13,6 +13,23 @@
     const videoLinks = () => [...new Set([...document.querySelectorAll('video, video source')].map(el => el.currentSrc || el.src)
         .filter(src => { try { const url = new URL(src); return url.protocol === 'https:' && url.hostname === 'flow-content.google' && url.pathname.startsWith('/video/'); } catch { return false; } }))];
     switch (action) {
+        case 'openCredits': {
+            const panel = document.querySelector('flow-account-panel');
+            if (visible(panel)) return true;
+            const avatar = document.querySelector('flow-header-user-icon');
+            return click(avatar?.querySelector('button, [role="button"]') || avatar);
+        }
+        case 'credits': {
+            const balance = document.querySelector('flow-account-panel span.credits-count');
+            const match = visible(balance) && (balance.innerText || '').trim().match(/^[0-9]+(?:[,.][0-9]{3})*/);
+            return match ? Number(match[0].replace(/[,.]/g, '')) : null;
+        }
+        case 'closeCredits': {
+            const panel = document.querySelector('flow-account-panel');
+            return !visible(panel) || click(panel.querySelector('button.close-btn, button[aria-label="Close account panel"]'));
+        }
+        case 'creditsClosed': return !visible(document.querySelector('flow-account-panel'));
+        case 'loginRequired': return /(^|\/)about\/?$/.test(location.pathname);
         case 'uploadInput': return !!document.querySelector('input[type=file]');
         case 'project':
             return !!editor || click(document.querySelector('flow-projects-page > button[mat-fab][extended]:has(mat-icon)'));

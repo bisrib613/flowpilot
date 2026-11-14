@@ -6,7 +6,7 @@ use super::{
 };
 
 pub(crate) struct MotionControlRequest<'a> {
-    pub(crate) profile_id: &'a str,
+    pub(crate) profile_ids: &'a [String],
     pub(crate) prompt: &'a str,
     pub(crate) model: &'a str,
     pub(crate) aspect_ratio: &'a str,
@@ -63,26 +63,38 @@ pub(crate) fn generate(
     }
 
     let mut clips = Vec::with_capacity(segments.len());
+    let mut profiles = request.profile_ids.iter().peekable();
     for (index, segment) in segments.into_iter().enumerate() {
         let references = [
             FlowReference::MotionVideo(segment),
             FlowReference::Image(request.character_image.to_path_buf()),
         ];
-        let result = flow.generate_video(FlowVideoRequest {
-            profile_id: request.profile_id,
-            prompt: request.prompt,
-            model: request.model,
-            aspect_ratio: request.aspect_ratio,
-            references: &references,
-        });
-        match result {
-            Ok(clip) => clips.push(clip),
-            Err(source) => {
-                return Err(MotionControlError::Generate {
-                    segment: index + 1,
-                    completed_clips: clips,
-                    source,
-                });
+        loop {
+            let result = match profiles.peek() {
+                Some(profile) => flow.generate_video(FlowVideoRequest {
+                    profile_id: profile,
+                    prompt: request.prompt,
+                    model: request.model,
+                    aspect_ratio: request.aspect_ratio,
+                    references: &references,
+                }),
+                None => Err(AutomationError::ProfilesExhausted),
+            };
+            match result {
+                Ok(clip) => {
+                    clips.push(clip);
+                    break;
+                }
+                Err(AutomationError::InsufficientCredits { .. }) => {
+                    profiles.next();
+                }
+                Err(source) => {
+                    return Err(MotionControlError::Generate {
+                        segment: index + 1,
+                        completed_clips: clips,
+                        source,
+                    });
+                }
             }
         }
     }

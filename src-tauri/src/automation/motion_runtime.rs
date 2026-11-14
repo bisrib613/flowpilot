@@ -1,6 +1,7 @@
 #![cfg(windows)]
 use std::{
     fs, io,
+    os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -16,6 +17,8 @@ use super::{
     AutomationError,
 };
 
+// Omni 1.1 Flash cost in the Armagic reference. Recheck if Flow changes pricing.
+const CLIP_CREDITS: u64 = 15;
 const FLOW: &[&str] = &["flow.google.com"];
 
 fn script(action: &str, value: Value) -> String {
@@ -48,6 +51,30 @@ impl FlowVideo for FlowSession<'_> {
             "https://flow.google.com/",
             FLOW,
         )?;
+        if browser.eval(&script("loginRequired", Value::Null))? == Value::Bool(true) {
+            return Err(AutomationError::LoginRequired);
+        }
+        step(&browser, "openCredits", Value::Null)?;
+        let remaining = browser
+            .wait(&script("credits", Value::Null), 15)
+            .and_then(|balance| {
+                balance
+                    .as_u64()
+                    .ok_or_else(|| failed("Flow credit balance could not be read"))
+            })
+            .map_err(|error| {
+                failed(format!(
+                    "Could not verify credits for the current Flow profile: {error:?}"
+                ))
+            })?;
+        if remaining < CLIP_CREDITS {
+            return Err(AutomationError::InsufficientCredits {
+                remaining,
+                required: CLIP_CREDITS,
+            });
+        }
+        step(&browser, "closeCredits", Value::Null)?;
+        step(&browser, "creditsClosed", Value::Null)?;
         step(&browser, "project", Value::Null)?;
         step(&browser, "focus", Value::Null)?;
         step(&browser, "settings", Value::Null)?;
@@ -139,6 +166,7 @@ impl Ffmpeg<'_> {
             .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
             .args(args)
             .current_dir(self.0)
+            .creation_flags(0x0800_0000)
             .output()
             .map_err(|err| {
                 if err.kind() == io::ErrorKind::NotFound {
@@ -250,18 +278,26 @@ impl MotionMedia for Ffmpeg<'_> {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MotionInput {
     profile_id: String,
+    profile_order: Vec<String>,
     character_image: PathBuf,
     motion_video: PathBuf,
     output: PathBuf,
     prompt: String,
     aspect_ratio: String,
     preserve_audio: bool,
-    ffmpeg: Option<PathBuf>,
 }
 
 pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> {
     if input.prompt.trim().is_empty() || !matches!(input.aspect_ratio.as_str(), "9:16" | "16:9") {
         return Err("A prompt and a supported aspect ratio are required".into());
+    }
+    let mut profiles = input.profile_order;
+    profiles.retain(|profile| profile != &input.profile_id);
+    profiles.insert(0, input.profile_id);
+    let mut seen = std::collections::HashSet::new();
+    profiles.retain(|profile| seen.insert(profile.clone()));
+    for profile in &profiles {
+        crate::webview_manager::validate_automation_profile(&app, "flow", profile)?;
     }
     let character = local_file(&input.character_image).map_err(|err| format!("{err:?}"))?;
     let motion = local_file(&input.motion_video).map_err(|err| format!("{err:?}"))?;
@@ -275,20 +311,9 @@ pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> 
     {
         return Err("Choose an unused MP4 output path in an existing folder".into());
     }
-    let binary = match input.ffmpeg {
-        Some(path) => {
-            let path = local_file(&path).map_err(|err| format!("{err:?}"))?;
-            if !path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case("ffmpeg.exe"))
-            {
-                return Err("Choose the ffmpeg.exe executable".into());
-            }
-            path
-        }
-        None => PathBuf::from("ffmpeg"),
-    };
+    let (binary, _) = crate::ffmpeg::resolve(&app).ok_or(
+        "FFmpeg is required. Select Install FFmpeg in Motion Control or Settings → Dependencies.",
+    )?;
     let folder = std::env::temp_dir().join(format!("flowpilot-motion-{}", Uuid::new_v4()));
     fs::create_dir(&folder).map_err(|err| err.to_string())?;
     let image_extension = character
@@ -314,7 +339,7 @@ pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> 
         },
         &mut Ffmpeg(&folder, binary),
         MotionControlRequest {
-            profile_id: &input.profile_id,
+            profile_ids: &profiles,
             prompt: input.prompt.trim(),
             model: "Omni 1.1 Flash",
             aspect_ratio: &input.aspect_ratio,
@@ -329,6 +354,9 @@ pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> 
             let _ = fs::remove_dir_all(&folder);
             Ok(path.to_string_lossy().into_owned())
         }
+        Err(motion_control::MotionControlError::Generate {
+            segment, completed_clips, source: AutomationError::ProfilesExhausted
+        }) => Err(format!("Flow profiles ran out of credits before segment {segment}. {} completed clip(s) kept in {}", completed_clips.len(), folder.display())),
         Err(error) => Err(format!("{error:?}. Working folder: {}", folder.display())),
     }
 }

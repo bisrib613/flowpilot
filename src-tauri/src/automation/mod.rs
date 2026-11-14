@@ -12,6 +12,8 @@ pub(crate) mod publishing;
 pub(crate) enum AutomationError {
     InvalidInput(&'static str),
     LoginRequired,
+    InsufficientCredits { remaining: u64, required: u64 },
+    ProfilesExhausted,
     DependencyMissing(&'static str),
     Failed(String),
     // A request may have been accepted. Check the platform before retrying.

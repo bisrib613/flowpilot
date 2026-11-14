@@ -1,3 +1,6 @@
+use tauri::Manager;
+#[cfg(windows)]
+mod ffmpeg;
 use std::time::Duration;
 use tauri::Emitter;
 
@@ -397,6 +400,8 @@ pub fn run() {
         .manage(webview_download_bridge::DownloadState::default())
         .invoke_handler(tauri::generate_handler![
             choose_motion_file,
+            ffmpeg_status,
+            install_ffmpeg,
             generate_motion,
             download_settings::get_download_folder,
             download_settings::choose_download_folder,
@@ -435,16 +440,23 @@ pub fn run() {
 }
 
 #[tauri::command]
-async fn choose_motion_file(kind: String) -> Result<Option<String>, String> {
+async fn choose_motion_file(app: tauri::AppHandle, kind: String) -> Result<Option<String>, String> {
     let dialog = rfd::AsyncFileDialog::new();
     let file = match kind.as_str() {
         "image" => dialog.add_filter("Image", &["png", "jpg", "jpeg", "webp"]).pick_file().await,
         "video" => dialog.add_filter("Video", &["mp4", "mov", "webm"]).pick_file().await,
         "output" => dialog.add_filter("MP4", &["mp4"]).set_file_name("motion-control.mp4").save_file().await,
-        "ffmpeg" => dialog.add_filter("FFmpeg", &["exe"]).pick_file().await,
         _ => return Err("Invalid Motion Control file type".into()),
     };
-    Ok(file.map(|file| file.path().to_string_lossy().into_owned()))
+    let Some(file) = file else { return Ok(None) };
+    if kind != "output" {
+        let allowed: &[&str] = if kind == "image" { &["png", "jpg", "jpeg", "webp"] } else { &["mp4", "mov", "webm"] };
+        if !file.path().is_file() || !file.path().extension().and_then(|ext| ext.to_str()).is_some_and(|ext| allowed.contains(&ext.to_ascii_lowercase().as_str())) {
+            return Err("Choose a supported image or video file".into());
+        }
+        app.asset_protocol_scope().allow_file(file.path()).map_err(|error| error.to_string())?;
+    }
+    Ok(Some(file.path().to_string_lossy().into_owned()))
 }
 
 #[cfg(windows)]
@@ -464,5 +476,30 @@ async fn generate_motion(app: tauri::AppHandle, input: MotionCommandInput) -> Re
     {
         let _ = (app, input);
         Err("Motion Control requires Windows and WebView2".into())
+    }
+}
+
+#[tauri::command]
+async fn ffmpeg_status(app: tauri::AppHandle) -> Result<&'static str, String> {
+    #[cfg(windows)]
+    return tauri::async_runtime::spawn_blocking(move ||
+        ffmpeg::resolve(&app).map(|(_, source)| source).unwrap_or("missing")
+    ).await.map_err(|err| err.to_string());
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Ok("unsupported")
+    }
+}
+
+#[tauri::command]
+async fn install_ffmpeg(app: tauri::AppHandle) -> Result<&'static str, String> {
+    #[cfg(windows)]
+    return tauri::async_runtime::spawn_blocking(move || ffmpeg::install(&app))
+        .await.map_err(|err| err.to_string())?;
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err("Managed FFmpeg is available on Windows".into())
     }
 }

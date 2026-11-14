@@ -1,13 +1,22 @@
-import { invoke } from "@tauri-apps/api/core"
+import FFmpegStatus from "./FFmpegStatus"
+import { convertFileSrc, invoke } from "@tauri-apps/api/core"
 import { useState } from "react"
 
 type Profile = { id: string; name: string }
+
+function FileField({ label, path, onChoose }: { label: string; path: string; onChoose: () => void }) {
+  return <div className="motion-file">
+    <div><strong>{label}</strong><span title={path}>{path ? path.split(/[\\/]/).pop() : "No file selected"}</span></div>
+    <button type="button" className="secondary" onClick={onChoose} aria-label={`Choose ${label.toLowerCase()}`}>{path ? "Change" : "Choose file"}</button>
+  </div>
+}
 
 export default function MotionControl({ profiles }: { profiles: Profile[] }) {
   const [characterImage, setCharacterImage] = useState("")
   const [motionVideo, setMotionVideo] = useState("")
   const [output, setOutput] = useState("")
-  const [ffmpeg, setFfmpeg] = useState("")
+  const [ffmpegReady, setFfmpegReady] = useState(false)
+  const [videoError, setVideoError] = useState(false)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState("")
 
@@ -20,21 +29,24 @@ export default function MotionControl({ profiles }: { profiles: Profile[] }) {
     }
   }
 
-  return <section className="preload-setting">
-    <h2>Motion Control</h2>
-    <p>Generate video in Google Flow using a character image and a motion reference. Model: Omni 1.1 Flash.</p>
+  return <section className="motion-workspace">
+    <h1>Motion Control</h1>
     <form onSubmit={async event => {
       event.preventDefault()
       const fields = new FormData(event.currentTarget)
+      const profileId = String(fields.get("profile"))
+      const start = profiles.findIndex(profile => profile.id === profileId)
+      if (start < 0) return
+      const profileOrder = [...profiles.slice(start), ...profiles.slice(0, start)].map(profile => profile.id)
       setBusy(true)
       setStatus("Preparing references and generating video…")
       try {
         const result = await invoke<string>("generate_motion", { input: {
-          profileId: fields.get("profile"),
+          profileId, profileOrder,
           prompt: fields.get("prompt"),
           aspectRatio: fields.get("ratio"),
           preserveAudio: fields.has("audio"),
-          characterImage, motionVideo, output, ffmpeg: ffmpeg || null,
+          characterImage, motionVideo, output,
         } })
         setStatus(`Saved to ${result}`)
       } catch (error) {
@@ -44,22 +56,39 @@ export default function MotionControl({ profiles }: { profiles: Profile[] }) {
       }
     }}>
       <fieldset disabled={busy || profiles.length === 0}>
-        <label>Google Flow profile {" "}
-          <select required name="profile">{profiles.map(profile => <option value={profile.id} key={profile.id}>{profile.name}</option>)}</select>
-        </label>
-        <label>Aspect ratio {" "}
-          <select name="ratio"><option>9:16</option><option>16:9</option></select>
-        </label>
-        <div><button type="button" onClick={() => void choose("image", setCharacterImage)}>Choose character image</button> {characterImage}</div>
-        <div><button type="button" onClick={() => void choose("video", setMotionVideo)}>Choose motion video</button> {motionVideo}</div>
-        <div><button type="button" onClick={() => void choose("output", setOutput)}>Choose output file</button> {output}</div>
-        <div><button type="button" onClick={() => void choose("ffmpeg", setFfmpeg)}>Choose FFmpeg</button> {ffmpeg || "Use FFmpeg from PATH"}</div>
-        <label>Prompt <textarea name="prompt" required rows={4} /></label>
-        <div><label><input type="checkbox" name="audio" defaultChecked /> Preserve original audio</label></div>
-        <button type="submit" disabled={!characterImage || !motionVideo || !output}>Generate</button>
+        <div className="motion-grid">
+          <section className="motion-card">
+            <h2>References</h2>
+            <FileField label="Character image" path={characterImage} onChoose={() => void choose("image", setCharacterImage)} />
+            {characterImage && <img className="motion-preview" src={convertFileSrc(characterImage)} alt="Selected character reference" />}
+            <FileField label="Motion video" path={motionVideo} onChoose={() => void choose("video", path => { setVideoError(false); setMotionVideo(path) })} />
+            {motionVideo && <video key={motionVideo} className="motion-preview" src={convertFileSrc(motionVideo)} controls preload="metadata" aria-label="Motion reference preview" onError={() => setVideoError(true)} />}
+            {videoError && <p className="dialog-error" role="status">This video format or codec could not be previewed in WebView2.</p>}
+            <label className="motion-field">Prompt
+              <textarea name="prompt" required rows={5} placeholder="Describe how the character should follow the reference." />
+            </label>
+          </section>
+          <section className="motion-card">
+            <h2>Output</h2>
+            <label className="motion-field">Start profile
+              <select required name="profile">{profiles.map(profile => <option value={profile.id} key={profile.id}>{profile.name}</option>)}</select>
+            </label>
+            <p className="muted">Continues with the next Flow profile when credits are insufficient.</p>
+            <div className="motion-options">
+              <label className="motion-field">Aspect ratio<select name="ratio"><option>9:16</option><option>16:9</option></select></label>
+              <div className="motion-field">Model<span>Omni 1.1 Flash</span></div>
+            </div>
+            <FileField label="Output file" path={output} onChoose={() => void choose("output", setOutput)} />
+            <label className="motion-checkbox"><input type="checkbox" name="audio" defaultChecked /> Preserve original audio</label>
+            <FFmpegStatus onReady={setFfmpegReady} />
+          </section>
+        </div>
+        <div className="motion-actions">
+          <button type="submit" className="primary" disabled={!characterImage || !motionVideo || !output || !ffmpegReady}>{busy ? "Generating…" : "Generate"}</button>
+        </div>
       </fieldset>
-      {profiles.length === 0 && <p>Add a Google Flow profile to start.</p>}
-      {status && <p role="status">{status}</p>}
+      {profiles.length === 0 && <p role="status">Add a Google Flow profile to start.</p>}
+      {status && <p className="motion-status" role="status">{status}</p>}
     </form>
   </section>
 }
