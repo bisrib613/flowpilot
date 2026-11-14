@@ -7,6 +7,8 @@
   ],
   "permissions": [
     "core:default",
+    "allow-choose-motion-file",
+    "allow-generate-motion",
     "updater:default",
     "process:allow-restart",
     "allow-get-download-folder",

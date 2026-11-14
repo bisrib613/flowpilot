@@ -1361,3 +1361,35 @@ mod preload_tests {
         assert_ne!(closed, reopened);
     }
 }
+
+#[cfg(windows)]
+pub(crate) fn automation_profile_directory(
+    app: &AppHandle,
+    service: &str,
+    account: &str,
+) -> Result<(PathBuf, Option<String>), String> {
+    let accounts = crate::account_store::load_accounts(app.clone())?
+        .ok_or("No profiles are saved")?;
+    let exists = accounts.as_array().is_some_and(|rows| rows.iter().any(|row| {
+        row.get("id").and_then(|value| value.as_str()) == Some(account)
+            && row.get("service").and_then(|value| value.as_str()).unwrap_or("flow") == service
+    }));
+    if !exists { return Err("The selected profile does not exist for this service".into()); }
+    let key = session_key_from_accounts(&accounts, service, account)?;
+    let args = if key.starts_with("flow-") {
+        let state = app.state::<WebviewManager>();
+        let mut ports = state.browser_profile_ports.lock().map_err(|_| "webview state unavailable")?;
+        let port = match ports.get(&key) {
+            Some(port) => *port,
+            None => {
+                let port = reserve_loopback_port()?;
+                ports.insert(key.clone(), port);
+                port
+            }
+        };
+        Some(flow_browser_args(port))
+    } else {
+        None
+    };
+    Ok((profile_path(app, &key)?, args))
+}

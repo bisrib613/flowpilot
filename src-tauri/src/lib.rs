@@ -14,6 +14,7 @@ mod download_settings;
 mod webview_download_bridge;
 mod dialog_thread_experiment;
 mod automation_bridge;
+mod automation;
 #[cfg(all(windows, feature = "diag"))]
 mod webview_diagnostics;
 
@@ -395,6 +396,8 @@ pub fn run() {
         .manage(webview_manager::WebviewManager::default())
         .manage(webview_download_bridge::DownloadState::default())
         .invoke_handler(tauri::generate_handler![
+            choose_motion_file,
+            generate_motion,
             download_settings::get_download_folder,
             download_settings::choose_download_folder,
             download_settings::open_download_folder,
@@ -429,4 +432,37 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Flowpilot");
+}
+
+#[tauri::command]
+async fn choose_motion_file(kind: String) -> Result<Option<String>, String> {
+    let dialog = rfd::AsyncFileDialog::new();
+    let file = match kind.as_str() {
+        "image" => dialog.add_filter("Image", &["png", "jpg", "jpeg", "webp"]).pick_file().await,
+        "video" => dialog.add_filter("Video", &["mp4", "mov", "webm"]).pick_file().await,
+        "output" => dialog.add_filter("MP4", &["mp4"]).set_file_name("motion-control.mp4").save_file().await,
+        "ffmpeg" => dialog.add_filter("FFmpeg", &["exe"]).pick_file().await,
+        _ => return Err("Invalid Motion Control file type".into()),
+    };
+    Ok(file.map(|file| file.path().to_string_lossy().into_owned()))
+}
+
+#[cfg(windows)]
+type MotionCommandInput = automation::motion_runtime::MotionInput;
+#[cfg(not(windows))]
+type MotionCommandInput = serde_json::Value;
+
+#[tauri::command]
+async fn generate_motion(app: tauri::AppHandle, input: MotionCommandInput) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(move || automation::motion_runtime::run(app, input))
+            .await
+            .map_err(|error| error.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, input);
+        Err("Motion Control requires Windows and WebView2".into())
+    }
 }

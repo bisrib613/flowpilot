@@ -21,7 +21,7 @@ rfd = "0.16"
 base64 = "0.22"
 tokio = { version = "1", features = ["time", "sync"] }
 keyring = { version = "3", features = ["windows-native"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38.2"

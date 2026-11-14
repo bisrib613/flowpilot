@@ -1,0 +1,334 @@
+#![cfg(windows)]
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+use serde_json::{json, Value};
+use tauri::AppHandle;
+use uuid::Uuid;
+
+use super::{
+    browser::{failed, local_file, Browser},
+    flow::{FlowReference, FlowVideo, FlowVideoRequest},
+    motion_control::{self, MotionControlRequest, MotionMedia},
+    AutomationError,
+};
+
+const FLOW: &[&str] = &["flow.google.com"];
+
+fn script(action: &str, value: Value) -> String {
+    format!(
+        "({})({}, {})",
+        include_str!("flow.js"),
+        json!(action),
+        value
+    )
+}
+
+fn step(browser: &Browser, action: &str, value: Value) -> Result<(), AutomationError> {
+    browser.wait(&script(action, value), 30).map(|_| ())
+}
+
+struct FlowSession<'a> {
+    app: &'a AppHandle,
+    folder: &'a Path,
+}
+
+impl FlowVideo for FlowSession<'_> {
+    fn generate_video(
+        &mut self,
+        request: FlowVideoRequest<'_>,
+    ) -> Result<PathBuf, AutomationError> {
+        let browser = Browser::open(
+            self.app,
+            "flow",
+            request.profile_id,
+            "https://flow.google.com/",
+            FLOW,
+        )?;
+        step(&browser, "project", Value::Null)?;
+        step(&browser, "focus", Value::Null)?;
+        step(&browser, "settings", Value::Null)?;
+        step(&browser, "mode", json!("videocam"))?;
+        step(&browser, "mode", json!("chrome_extension"))?;
+        step(
+            &browser,
+            "mode",
+            json!(if request.aspect_ratio == "9:16" {
+                "crop_9_16"
+            } else {
+                "crop_16_9"
+            }),
+        )?;
+        step(&browser, "modelMenu", json!(request.model))?;
+        step(&browser, "model", json!(request.model))?;
+        step(&browser, "duration", Value::Null)?;
+        step(&browser, "closeSettings", Value::Null)?;
+        browser.intercept_file_chooser()?;
+        let mut names = Vec::new();
+        for reference in request.references {
+            let path = match reference {
+                FlowReference::Image(path) | FlowReference::MotionVideo(path) => path,
+            };
+            let name = path.file_stem().and_then(|name| name.to_str()).ok_or(
+                AutomationError::InvalidInput("Reference filename is invalid"),
+            )?;
+            if browser.eval(&script("uploadInput", Value::Null))? != Value::Bool(true) {
+                step(&browser, "add", Value::Null)?;
+                step(&browser, "upload", Value::Null)?;
+            }
+            browser.upload("input[type=file]", path)?;
+            step(&browser, "asset", json!(name))?;
+            names.push(name);
+        }
+        let previous = browser.eval(&script("links", Value::Null))?;
+        for name in &names {
+            step(&browser, "focus", Value::Null)?;
+            browser.insert_text("@")?;
+            step(&browser, "mentionSearch", Value::Null)?;
+            browser.insert_text(name)?;
+            step(&browser, "mentionSelect", json!(name))?;
+        }
+        step(&browser, "mentions", json!(names.len()))?;
+        step(&browser, "focus", Value::Null)?;
+        browser.insert_text(&format!(" {}", request.prompt))?;
+        step(&browser, "submitReady", json!(request.prompt))?;
+        browser
+            .enter()
+            .map_err(|_| AutomationError::SubmissionUnconfirmed)?;
+        let result = browser
+            .wait(&script("result", previous), 600)
+            .map_err(|_| AutomationError::SubmissionUnconfirmed)?;
+        let url = result
+            .as_str()
+            .ok_or_else(|| failed("Google Flow reported a generation error"))?;
+        let target = self.folder.join(format!("clip-{}.mp4", Uuid::new_v4()));
+        let client = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(180))
+            .build()
+            .map_err(failed)?;
+        let mut response = client
+            .get(url)
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .map_err(failed)?;
+        let mime = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        if !mime.starts_with("video/") && mime != "application/octet-stream" {
+            return Err(failed("Flow response was not a video"));
+        }
+        let mut output = fs::File::create(&target).map_err(failed)?;
+        if io::copy(&mut response, &mut output).map_err(failed)? == 0 {
+            return Err(failed("Flow returned an empty video"));
+        }
+        Ok(target)
+    }
+}
+
+struct Ffmpeg<'a>(&'a Path, PathBuf);
+
+impl Ffmpeg<'_> {
+    fn run(&self, args: &[&str]) -> Result<(), AutomationError> {
+        let result = Command::new(&self.1)
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
+            .args(args)
+            .current_dir(self.0)
+            .output()
+            .map_err(|err| {
+                if err.kind() == io::ErrorKind::NotFound {
+                    AutomationError::DependencyMissing("FFmpeg")
+                } else {
+                    failed(err)
+                }
+            })?;
+        if !result.status.success() {
+            return Err(failed(String::from_utf8_lossy(&result.stderr)));
+        }
+        Ok(())
+    }
+}
+
+fn filename(path: &Path) -> Result<&str, AutomationError> {
+    path.to_str()
+        .ok_or(AutomationError::InvalidInput("Invalid file path"))
+}
+
+impl MotionMedia for Ffmpeg<'_> {
+    fn prepare(&mut self, video: &Path, _: &str) -> Result<Vec<PathBuf>, AutomationError> {
+        self.run(&["-version"])?;
+        self.run(&[
+            "-i",
+            filename(video)?,
+            "-map",
+            "0:v:0",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-force_key_frames",
+            "expr:gte(t,n_forced*10)",
+            "-f",
+            "segment",
+            "-segment_time",
+            "10",
+            "-reset_timestamps",
+            "1",
+            "motion-%05d.mp4",
+        ])?;
+        let mut clips = Vec::new();
+        for entry in fs::read_dir(self.0).map_err(failed)? {
+            let path = entry.map_err(failed)?.path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("motion-") && name.ends_with(".mp4"))
+            {
+                clips.push(path);
+            }
+        }
+        clips.sort();
+        Ok(clips)
+    }
+
+    fn finish(
+        &mut self,
+        clips: &[PathBuf],
+        audio: Option<&Path>,
+        output: &Path,
+    ) -> Result<(), AutomationError> {
+        let mut manifest = String::new();
+        for clip in clips {
+            let name = clip
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| failed("Invalid clip filename"))?;
+            manifest.push_str(&format!("file '{name}'\n"));
+        }
+        fs::write(self.0.join("clips.txt"), manifest).map_err(failed)?;
+        let mut args = vec!["-f", "concat", "-i", "clips.txt"];
+        if let Some(audio) = audio {
+            args.extend([
+                "-i",
+                filename(audio)?,
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0?",
+                "-c:a",
+                "aac",
+            ]);
+        } else {
+            args.extend(["-map", "0:v:0", "-map", "0:a:0?", "-c:a", "aac"]);
+        }
+        args.extend(["-c:v", "copy", "-movflags", "+faststart", "assembled.mp4"]);
+        self.run(&args)?;
+        let mut source = fs::File::open(self.0.join("assembled.mp4")).map_err(failed)?;
+        let mut destination = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)
+            .map_err(failed)?;
+        if let Err(error) =
+            io::copy(&mut source, &mut destination).and_then(|_| destination.sync_all())
+        {
+            drop(destination);
+            let _ = fs::remove_file(output);
+            return Err(failed(error));
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MotionInput {
+    profile_id: String,
+    character_image: PathBuf,
+    motion_video: PathBuf,
+    output: PathBuf,
+    prompt: String,
+    aspect_ratio: String,
+    preserve_audio: bool,
+    ffmpeg: Option<PathBuf>,
+}
+
+pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> {
+    if input.prompt.trim().is_empty() || !matches!(input.aspect_ratio.as_str(), "9:16" | "16:9") {
+        return Err("A prompt and a supported aspect ratio are required".into());
+    }
+    let character = local_file(&input.character_image).map_err(|err| format!("{err:?}"))?;
+    let motion = local_file(&input.motion_video).map_err(|err| format!("{err:?}"))?;
+    let output = std::path::absolute(&input.output).map_err(|err| err.to_string())?;
+    if output.exists()
+        || !output.parent().is_some_and(Path::is_dir)
+        || !output
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
+    {
+        return Err("Choose an unused MP4 output path in an existing folder".into());
+    }
+    let binary = match input.ffmpeg {
+        Some(path) => {
+            let path = local_file(&path).map_err(|err| format!("{err:?}"))?;
+            if !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("ffmpeg.exe"))
+            {
+                return Err("Choose the ffmpeg.exe executable".into());
+            }
+            path
+        }
+        None => PathBuf::from("ffmpeg"),
+    };
+    let folder = std::env::temp_dir().join(format!("flowpilot-motion-{}", Uuid::new_v4()));
+    fs::create_dir(&folder).map_err(|err| err.to_string())?;
+    let image_extension = character
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp"
+            )
+        })
+        .ok_or("Choose a PNG, JPG, or WebP character image")?;
+    let image = folder.join(format!(
+        "character-{}.{}",
+        Uuid::new_v4().simple(),
+        image_extension
+    ));
+    fs::copy(&character, &image).map_err(|error| error.to_string())?;
+    let result = motion_control::generate(
+        &mut FlowSession {
+            app: &app,
+            folder: &folder,
+        },
+        &mut Ffmpeg(&folder, binary),
+        MotionControlRequest {
+            profile_id: &input.profile_id,
+            prompt: input.prompt.trim(),
+            model: "Omni 1.1 Flash",
+            aspect_ratio: &input.aspect_ratio,
+            character_image: &image,
+            motion_video: &motion,
+            output: &output,
+            preserve_audio: input.preserve_audio,
+        },
+    );
+    match result {
+        Ok(path) => {
+            let _ = fs::remove_dir_all(&folder);
+            Ok(path.to_string_lossy().into_owned())
+        }
+        Err(error) => Err(format!("{error:?}. Working folder: {}", folder.display())),
+    }
+}

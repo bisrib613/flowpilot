@@ -1,3 +1,4 @@
+import MotionControl from "./components/MotionControl"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react"
 import { getVersion } from "@tauri-apps/api/app"
 import { listen } from "@tauri-apps/api/event"
@@ -904,8 +905,9 @@ export default function App() {
         {view === "settings" ? (
           <>
           <nav className="settings-tabs" aria-label="Settings sections">
-            {["general", "updates", "help"].map((tab) => <button key={tab} className={settingsTab === tab ? "active" : ""} aria-pressed={settingsTab === tab} onClick={() => setSettingsTab(tab)}>{tab === "help" ? "Help & info" : tab[0].toUpperCase() + tab.slice(1)}</button>)}
+            {["general", "motion", "updates", "help"].map((tab) => <button key={tab} className={settingsTab === tab ? "active" : ""} aria-pressed={settingsTab === tab} onClick={() => setSettingsTab(tab)}>{tab === "help" ? "Help & info" : tab === "motion" ? "Motion Control" : tab[0].toUpperCase() + tab.slice(1)}</button>)}
           </nav>
+          <div hidden={settingsTab !== "motion"}><MotionControl profiles={accounts.filter(account => serviceOf(account) === "flow")} /></div>
           {settingsTab === "general" ? <>
           <DownloadSettings />
           <GoogleReLoginSettings onEnabled={() => void checkAllFlowProfiles()} />
@@ -925,7 +927,7 @@ export default function App() {
             clearingAllCaches={clearingAllCaches}
             onClearAllCaches={() => void handleClearAllAccountCaches()}
           />
-          </> : settingsTab === "updates" ? <UpdatesPage /> : <InfoPage />}
+          </> : settingsTab === "updates" ? <UpdatesPage /> : settingsTab === "help" ? <InfoPage /> : null}
           </>
         ) : (
           <>
