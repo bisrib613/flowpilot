@@ -6,8 +6,8 @@ const manifest = new Set([...read('src-tauri/build.rs').matchAll(/"([a-z_]+)"/g)
 const handler = read('src-tauri/src/lib.rs').replace(/#\[cfg[^\n]+\]\s*[^\n]+,/g, '').match(/generate_handler!\[([\s\S]*?)\]/)[1]
 const registered = new Set(handler.split(',').map(name => name.trim().split('::').pop()).filter(Boolean))
 const capability = JSON.parse(read('src-tauri/capabilities/default.json'))
-const invoked = new Set(['src/App.tsx', 'src/services/account-store.ts'].flatMap(path =>
-  [...read(path).matchAll(/invoke(?:<[^>]+>)?\(\s*"([a-z_]+)"/g)].map(match => match[1])))
+const invoked = new Set(['src/App.tsx', 'src/services/account-store.ts', 'src/components/PromptLibrary.tsx'].flatMap(path =>
+  [...read(path).matchAll(/(?:invoke|workspaceCommand)(?:<[^>]+>)?\(\s*"([a-z_]+)"/g)].map(match => match[1])))
 test('registered application commands are declared in the build manifest', () => {
   assert.deepEqual([...registered].filter(name => !manifest.has(name)), [])
 })
@@ -23,6 +23,6 @@ test('workspace management grants stay local', () => {
   assert.equal(capability.remote, undefined)
   for (const file of fs.readdirSync('src-tauri/capabilities').filter(name => name.endsWith('.json'))) {
     const entry = JSON.parse(read(`src-tauri/capabilities/${file}`))
-    if (entry.remote) assert.ok(!entry.permissions.some(name => ['allow-prepare-workspace', 'allow-preload-workspace', 'allow-close-workspaces'].includes(name)))
+    if (entry.remote) assert.ok(!entry.permissions.some(name => ['allow-prepare-workspace', 'allow-preload-workspace', 'allow-close-workspaces', 'allow-name-generator-status', 'allow-name-generator-save-key', 'allow-name-generator-disable'].includes(name)))
   }
 })

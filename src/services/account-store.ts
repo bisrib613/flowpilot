@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core"
+import { isServiceId, type ServiceId } from "./service-registry"
 
 export type StoredAccount = {
   id: string
@@ -8,12 +9,18 @@ export type StoredAccount = {
   avatar: string
   favorite: boolean
   order: number
-  service?: "flow" | "dola" | "leonardo" | "chatgpt" | "migoo"
+  addedAt?: number
+  lastOpenedAt?: number
+  service?: ServiceId
   flowSessionId?: string
 }
 
 const STORAGE_KEY = "flowpilot-accounts"
-const SERVICES = new Set(["flow", "dola", "leonardo", "chatgpt", "migoo"])
+
+// Failure to clean up an obsolete browser cache must not turn a successful native write into a failed save.
+function removeLegacyCache() {
+  try { localStorage.removeItem(STORAGE_KEY) } catch { /* Native data is authoritative. */ }
+}
 
 function isAccount(value: unknown): value is StoredAccount {
   if (!value || typeof value !== "object") return false
@@ -25,8 +32,10 @@ function isAccount(value: unknown): value is StoredAccount {
     (account.avatarUrl === null || typeof account.avatarUrl === "string") &&
     typeof account.avatar === "string" &&
     typeof account.favorite === "boolean" &&
-    typeof account.order === "number" &&
-    (account.service === undefined || SERVICES.has(account.service)) &&
+    Number.isFinite(account.order) &&
+    (account.addedAt === undefined || (Number.isFinite(account.addedAt) && account.addedAt >= 0)) &&
+    (account.lastOpenedAt === undefined || (Number.isFinite(account.lastOpenedAt) && account.lastOpenedAt >= 0)) &&
+    (account.service === undefined || isServiceId(account.service)) &&
     (account.flowSessionId === undefined || (
       typeof account.flowSessionId === "string" &&
       /^[A-Za-z0-9_-]{1,128}$/.test(account.flowSessionId) &&
@@ -40,7 +49,7 @@ export async function loadAccounts(): Promise<StoredAccount[]> {
     const native = await invoke<unknown>("load_accounts")
     if (native !== null && native !== undefined) {
       if (!Array.isArray(native) || !native.every(isAccount)) throw new Error("Invalid stored account data")
-      localStorage.removeItem(STORAGE_KEY)
+      removeLegacyCache()
       return [...native].sort((a, b) => a.order - b.order)
     }
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -48,7 +57,7 @@ export async function loadAccounts(): Promise<StoredAccount[]> {
       const parsed: unknown = JSON.parse(raw)
       if (!Array.isArray(parsed) || !parsed.every(isAccount)) throw new Error("Invalid stored account data")
       await invoke("save_accounts", { accounts: parsed })
-      localStorage.removeItem(STORAGE_KEY)
+      removeLegacyCache()
       return [...parsed].sort((a, b) => a.order - b.order)
     }
     return []
@@ -65,7 +74,7 @@ export function saveAccounts(accounts: StoredAccount[]): Promise<void> {
   // Preserve write order even when multiple React updates arrive in quick succession.
   const pending = saveQueue.catch(() => undefined).then(async () => {
     await invoke("save_accounts", { accounts })
-    localStorage.removeItem(STORAGE_KEY)
+    removeLegacyCache()
   })
   saveQueue = pending
   return pending

@@ -2,6 +2,10 @@ fn main() {
     tauri_build::try_build(
         tauri_build::Attributes::new().app_manifest(
             tauri_build::AppManifest::new().commands(&[
+                "choose_motion_file",
+                "ffmpeg_status",
+                "install_ffmpeg",
+                "generate_motion",
                 "get_download_folder",
                 "choose_download_folder",
                 "open_download_folder",
@@ -19,6 +23,16 @@ fn main() {
                 "complete_blob_download",
                 "cancel_blob_download",
                 "debug_trigger_isolated_dialog",
+                "check_flow_profile",
+                "run_bulk_shared_login",
+                "name_generator_status",
+                "name_generator_save_key",
+                "name_generator_disable",
+                "google_relogin_status",
+                "google_relogin_save_password",
+                "google_relogin_disable",
+                "list_prompts",
+                "mutate_prompt",
                 "load_accounts",
                 "save_accounts",
             ]),

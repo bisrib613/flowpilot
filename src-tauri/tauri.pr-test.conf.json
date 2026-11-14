@@ -1,5 +1,8 @@
 {
   "bundle": {
     "createUpdaterArtifacts": false
+  },
+  "build": {
+    "beforeBuildCommand": "npx tsc -b && npx vite build"
   }
 }

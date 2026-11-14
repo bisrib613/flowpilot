@@ -1,0 +1,2 @@
+@video @image
+Create a brand new video. Replace the subject in the source video with the person from the reference image. Maintain 100% frame-by-frame accuracy of the dance choreography, body poses, and precise hand/finger movements. The mouth must remain closed and must not appear to speak or sing. A natural gentle smile is allowed. The environment and character details must match the reference image. Silent output, no audio.

@@ -13,12 +13,15 @@ fn path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
 pub fn load_accounts<R: Runtime>(app: AppHandle<R>) -> Result<Option<serde_json::Value>, String> {
     let _guard = ACCOUNTS_LOCK.lock().map_err(|_| "Account storage lock unavailable")?;
     let file = path(&app)?;
-    if !file.exists() {
-        return Ok(None);
+    match fs::read(&file) {
+        Ok(bytes) => {
+            let value = serde_json::from_slice(&bytes).map_err(|_| "Stored accounts contain invalid JSON")?;
+            validate(&value)?;
+            Ok(Some(value))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err("Unable to read stored accounts".into()),
     }
-    serde_json::from_str(&fs::read_to_string(file).map_err(|e| e.to_string())?)
-        .map(Some)
-        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -31,25 +34,32 @@ pub fn save_accounts<R: Runtime>(
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    if !accounts.is_array() { return Err("Account data must be an array".into()); }
+    validate(&accounts)?;
     let bytes = serde_json::to_vec(&accounts).map_err(|e| e.to_string())?;
-    let temp = file.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-    fs::write(&temp, bytes).map_err(|e| e.to_string())?;
-    let result = (|| {
-        // Windows requires the existing file to be removed or replaced explicitly.
-        #[cfg(windows)]
-        if file.exists() {
-            // Preserve a recoverable backup if the final rename fails.
-            let backup = file.with_extension("json.bak");
-            fs::copy(&file, backup).map_err(|e| e.to_string())?;
-            fs::remove_file(&file).map_err(|e| e.to_string())?;
+    // Keep the existing recovery backup, then atomically replace on Windows.
+    match fs::read(&file) {
+        Ok(previous) => {
+            let value = serde_json::from_slice(&previous).map_err(|_| "Existing accounts contain invalid JSON; no files changed")?;
+            validate(&value)?;
+            crate::atomic_store::write(&file.with_extension("json.bak"), &previous)?;
         }
-        fs::rename(&temp, &file).map_err(|e| e.to_string())
-    })();
-    if result.is_err() {
-        let backup = file.with_extension("json.bak");
-        if !file.exists() && backup.exists() { let _ = fs::copy(&backup, &file); }
-        let _ = fs::remove_file(&temp);
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+        Err(_) => return Err("Unable to back up existing accounts".into()),
     }
-    result
+    crate::atomic_store::write(&file, &bytes)
+}
+
+fn validate(value: &serde_json::Value) -> Result<(), String> {
+    let rows = value.as_array().ok_or("Account data must be an array")?;
+    for row in rows {
+        let valid = row.get("id").is_some_and(|v| v.is_string())
+            && row.get("name").is_some_and(|v| v.is_string())
+            && row.get("email").is_some_and(|v| v.is_null() || v.is_string())
+            && row.get("avatarUrl").is_some_and(|v| v.is_null() || v.is_string())
+            && row.get("avatar").is_some_and(|v| v.is_string())
+            && row.get("favorite").is_some_and(|v| v.is_boolean())
+            && row.get("order").is_some_and(|v| v.is_number());
+        if !valid { return Err("Invalid account data; existing files were left unchanged".into()); }
+    }
+    Ok(())
 }
