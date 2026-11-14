@@ -116,30 +116,35 @@ impl FlowVideo for FlowSession<'_> {
         }
         step(&browser, "closeSettings", Value::Null)?;
         browser.intercept_file_chooser()?;
-        let mut names = Vec::new();
+        let mut assets = [None, None];
         for reference in request.references {
-            let path = match reference {
-                FlowReference::Image(path) | FlowReference::MotionVideo(path) => path,
+            let (index, kind, path) = match reference {
+                FlowReference::MotionVideo(path) => (0, "video", path),
+                FlowReference::Image(path) => (1, "image", path),
             };
             let name = path.file_stem().and_then(|name| name.to_str()).ok_or(
                 AutomationError::InvalidInput("Reference filename is invalid"),
             )?;
+            let filename = path.file_name().and_then(|value| value.to_str())
+                .ok_or(AutomationError::InvalidInput("Reference filename is invalid"))?;
+            let aliases = [filename, name];
             if browser.eval(&script("uploadInput", Value::Null))? != Value::Bool(true) {
                 step(&browser, "add", Value::Null)?;
                 step(&browser, "upload", Value::Null)?;
             }
             browser.upload("input[type=file]", path)?;
-            let asset = wait_stage(&browser, "asset", json!(name), 60).map_err(|error| match error {
+            let asset = wait_stage(&browser, "asset", json!({"names": aliases, "kind": kind}), 60).map_err(|error| match error {
                 AutomationError::Failed(message) => failed(format!("{message} ({name})")),
                 other => other,
             })?;
             if asset.as_str() == Some("consent-required") {
                 return Err(failed("Open the selected Flow profile and approve Google's upload consent before retrying Motion Control"));
             }
-            names.push(name);
+            let display_name = asset.as_str().ok_or_else(|| failed("Flow did not identify the uploaded reference"))?;
+            assets[index] = Some((display_name.to_owned(), aliases));
         }
         browser.eval(&script("beforeSubmit", Value::Null))?;
-        let mut mentions = 0;
+        let mut mention_counts = [0, 0];
         step(&browser, "focus", Value::Null)?;
         for part in super::motion_prompt::parts(request.prompt) {
             let index = match part {
@@ -150,15 +155,19 @@ impl FlowVideo for FlowSession<'_> {
                 super::motion_prompt::Part::Video => 0,
                 super::motion_prompt::Part::Image => 1,
             };
-            let name = names.get(index).ok_or_else(|| failed("Motion reference missing"))?;
+            let (_display_name, aliases) = assets[index].as_ref().ok_or_else(|| failed("Motion reference missing"))?;
             browser.insert_text("@")?;
             step(&browser, "mentionSearch", Value::Null)?;
-            browser.insert_text(name)?;
-            step(&browser, "mentionSelect", json!(name))?;
-            mentions += 1;
-            step(&browser, "mentions", json!(mentions))?;
+            browser.insert_text(aliases[1])?;
+            step(&browser, "mentionSelect", json!(aliases))?;
+            mention_counts[index] += 1;
+            step(&browser, "mentionAttached", json!({"names": aliases, "count": mention_counts[index]}))?;
             step(&browser, "focus", Value::Null)?;
         }
+        let expected = assets.iter().zip(mention_counts).filter_map(|(asset, count)| {
+            asset.as_ref().filter(|_| count > 0).map(|(_, aliases)| json!({"names": aliases, "count": count}))
+        }).collect::<Vec<_>>();
+        step(&browser, "verifyMentions", json!(expected))?;
         step(&browser, "submitReady", Value::Null)?;
         browser
             .enter()
@@ -208,7 +217,7 @@ impl FlowVideo for FlowSession<'_> {
     }
 }
 
-struct Ffmpeg<'a>(&'a Path, PathBuf);
+struct Ffmpeg<'a>(&'a Path, PathBuf, Uuid);
 
 impl Ffmpeg<'_> {
     fn run(&self, args: &[&str]) -> Result<(), AutomationError> {
@@ -240,6 +249,7 @@ fn filename(path: &Path) -> Result<&str, AutomationError> {
 impl MotionMedia for Ffmpeg<'_> {
     fn prepare(&mut self, video: &Path, _: &str) -> Result<Vec<PathBuf>, AutomationError> {
         self.run(&["-version"])?;
+        let pattern = format!("motion-{}-%05d.mp4", self.2.simple());
         self.run(&[
             "-i",
             filename(video)?,
@@ -268,7 +278,7 @@ impl MotionMedia for Ffmpeg<'_> {
             "reference-segments.csv",
             "-reset_timestamps",
             "1",
-            "motion-%05d.mp4",
+            &pattern,
         ])?;
         let mut clips = Vec::new();
         for entry in fs::read_dir(self.0).map_err(failed)? {
@@ -296,7 +306,7 @@ impl MotionMedia for Ffmpeg<'_> {
             let (name, timestamps) = line.split_once(',').ok_or_else(|| failed("Invalid reference segment list"))?;
             let (start, end) = timestamps.split_once(',').ok_or_else(|| failed("Reference timestamps missing"))?;
             let duration = end.parse::<f64>().map_err(failed)? - start.parse::<f64>().map_err(failed)?;
-            if name != format!("motion-{index:05}.mp4") || !duration.is_finite() || duration <= 0.0 || duration > 10.001 {
+            if name != format!("motion-{}-{index:05}.mp4", self.2.simple()) || !duration.is_finite() || duration <= 0.0 || duration > 10.001 {
                 return Err(failed("Invalid reference segment duration or order"));
             }
             Ok(format!("{duration:.6}"))
@@ -415,7 +425,7 @@ pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> 
             app: &app,
             folder: &folder,
         },
-        &mut Ffmpeg(&folder, binary),
+        &mut Ffmpeg(&folder, binary, job_id),
         MotionControlRequest {
             profile_ids: &profiles,
             prompt: &prompt,

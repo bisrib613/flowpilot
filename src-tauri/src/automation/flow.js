@@ -12,6 +12,12 @@
     const creditPanel = () => all(document, 'flow-account-panel, [cdktrapfocus][role="dialog"]').find(panel =>
         panel.matches('flow-account-panel') || panel.querySelector('span.credits-count'));
     const editor = document.querySelector('flow-rich-text-editor .ProseMirror[contenteditable="true"], .prosemirror-editor .ProseMirror[contenteditable="true"]');
+    const labels = el => [el.getAttribute('data-name'), el.getAttribute('data-filename'), el.getAttribute('title'),
+        el.getAttribute('aria-label'), ...(el.innerText || '').split('\n')].filter(Boolean)
+        .map(value => value.trim().replace(/^@/, ''));
+    const hasName = (el, names) => labels(el).some(label => names.includes(label));
+    const hasMention = (names, count) => !!editor && [...editor.querySelectorAll('[contenteditable="false"]')]
+        .filter(chip => hasName(chip, names)).length >= count;
     const settings = document.querySelector('flow-prompt-box-settings');
     const resultTiles = () => all(document, 'flow-a2ui-message-renderer flow-a2ui-video-option, flow-grid-tile-container')
         .filter(tile => !tile.hasAttribute('data-flowpilot-reference'));
@@ -80,14 +86,16 @@
         case 'asset': {
             if (visible(document.querySelector('flow-upload-consent-dialog'))) return 'consent-required';
             const tiles = all(document, 'flow-grid-tile-container').filter(tile =>
-                (tile.innerText + ' ' + (tile.getAttribute('aria-label') || '')).includes(data));
+                hasName(tile, data.names));
             if (tiles.length !== 1) return null;
             const tile = tiles[0];
             tile.setAttribute('data-flowpilot-reference', '');
             const video = tile.querySelector('video');
             const image = tile.querySelector('img[src]');
-            return video ? !!(video.currentSrc || video.src || video.querySelector('source[src]'))
+            const ready = data.kind === 'video'
+                ? video?.readyState >= 1 && Number.isFinite(video.duration) && video.duration > 0
                 : !!(image?.complete && image.naturalWidth);
+            return ready ? (labels(tile).find(label => data.names.includes(label)) || data.names[0]) : null;
         }
         case 'focus': if (!editor) return false; editor.focus(); return true;
         case 'mentionSearch': {
@@ -99,12 +107,15 @@
         case 'mentionSelect': {
             const input = document.querySelector('#add-menu-input');
             const root = input?.closest('.cdk-overlay-pane, [role="dialog"]') || document;
-            return click(all(root, '[role="option"], button, flow-menu-item').find(el => {
-                const text = (el.innerText || '').trim();
-                return text === data || text.startsWith(data + '\n');
-            }));
+            if (!visible(input) || root === document) return false;
+            const candidates = all(root, '[role="option"], flow-menu-item, button')
+                .filter(el => hasName(el, data));
+            const options = candidates.filter(el => !candidates.some(other => other !== el && el.contains(other)));
+            return options.length === 1 && click(options[0]);
         }
-        case 'mentions': return !!editor && editor.querySelectorAll('[contenteditable="false"]').length >= data;
+        case 'mentionAttached':
+            return !visible(document.querySelector('#add-menu-input')) && hasMention(data.names, data.count);
+        case 'verifyMentions': return data.every(mention => hasMention(mention.names, mention.count));
         case 'submitReady': return !!editor && (!!editor.innerText.trim() || !!editor.querySelector('[contenteditable="false"]'));
         case 'beforeSubmit':
             resultTiles().forEach(tile => tile.setAttribute('data-flowpilot-previous', ''));
