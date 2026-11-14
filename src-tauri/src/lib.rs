@@ -445,11 +445,10 @@ async fn choose_motion_file(app: tauri::AppHandle, kind: String) -> Result<Optio
     let file = match kind.as_str() {
         "image" => dialog.add_filter("Image", &["png", "jpg", "jpeg", "webp"]).pick_file().await,
         "video" => dialog.add_filter("Video", &["mp4", "mov", "webm"]).pick_file().await,
-        "output" => dialog.add_filter("MP4", &["mp4"]).set_file_name("motion-control.mp4").save_file().await,
         _ => return Err("Invalid Motion Control file type".into()),
     };
     let Some(file) = file else { return Ok(None) };
-    if kind != "output" {
+    {
         let allowed: &[&str] = if kind == "image" { &["png", "jpg", "jpeg", "webp"] } else { &["mp4", "mov", "webm"] };
         if !file.path().is_file() || !file.path().extension().and_then(|ext| ext.to_str()).is_some_and(|ext| allowed.contains(&ext.to_ascii_lowercase().as_str())) {
             return Err("Choose a supported image or video file".into());

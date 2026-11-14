@@ -291,16 +291,13 @@ pub(crate) struct MotionInput {
     profile_order: Vec<String>,
     character_image: PathBuf,
     motion_video: PathBuf,
-    output: PathBuf,
     prompt: String,
-    #[serde(default = "super::motion_prompt::enabled")]
-    use_hardprompt: bool,
     aspect_ratio: String,
     preserve_audio: bool,
 }
 
 pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> {
-    let prompt = super::motion_prompt::compose(&input.prompt, input.use_hardprompt)?;
+    let prompt = super::motion_prompt::compose(&input.prompt);
     if !matches!(input.aspect_ratio.as_str(), "9:16" | "16:9") {
         return Err("Select a supported aspect ratio".into());
     }
@@ -314,16 +311,15 @@ pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> 
     }
     let character = local_file(&input.character_image).map_err(|err| format!("{err:?}"))?;
     let motion = local_file(&input.motion_video).map_err(|err| format!("{err:?}"))?;
-    let output = std::path::absolute(&input.output).map_err(|err| err.to_string())?;
-    if output.exists()
-        || !output.parent().is_some_and(Path::is_dir)
-        || !output
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
-    {
-        return Err("Choose an unused MP4 output path in an existing folder".into());
-    }
+    let output_dir = crate::download_settings::folder(&app)?.join("Motion Control");
+    fs::create_dir_all(&output_dir).map_err(|err| format!("Cannot create Motion Control output folder: {err}"))?;
+    let job_id = Uuid::new_v4();
+    let output = output_dir.join(format!("Motion-Control-{job_id}.mp4"));
+    // Check write access before spending Flow credits.
+    let probe = output_dir.join(format!(".{job_id}.write-check"));
+    fs::OpenOptions::new().write(true).create_new(true).open(&probe)
+        .map_err(|err| format!("Cannot write to Motion Control output folder: {err}"))?;
+    fs::remove_file(&probe).map_err(|err| err.to_string())?;
     let (binary, _) = crate::ffmpeg::resolve(&app).ok_or(
         "FFmpeg is required. Select Install FFmpeg in Motion Control or Settings → Dependencies.",
     )?;

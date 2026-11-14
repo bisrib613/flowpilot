@@ -1,16 +1,11 @@
 const DEFAULT: &str = include_str!("motion-default.txt");
 
-pub(super) fn enabled() -> bool {
-    true
-}
-
-pub(super) fn compose(input: &str, hardprompt: bool) -> Result<String, &'static str> {
+pub(super) fn compose(input: &str) -> String {
     let input = input.trim();
-    match (hardprompt, input.is_empty()) {
-        (true, true) => Ok(DEFAULT.trim_end().to_owned()),
-        (true, false) => Ok(format!("{}\n\nPENTING: {input}", DEFAULT.trim_end())),
-        (false, false) => Ok(input.to_owned()),
-        (false, true) => Err("Enter a prompt when hardprompt is off"),
+    if input.is_empty() {
+        DEFAULT.trim_end().to_owned()
+    } else {
+        format!("{}\n\nPENTING: {input}", DEFAULT.trim_end())
     }
 }
 

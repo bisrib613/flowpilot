@@ -15,10 +15,8 @@ function FileField({ label, path, onChoose }: { label: string; path: string; onC
 export default function MotionControl({ profiles }: { profiles: Profile[] }) {
   const [characterImage, setCharacterImage] = useState("")
   const [motionVideo, setMotionVideo] = useState("")
-  const [output, setOutput] = useState("")
   const [ffmpegReady, setFfmpegReady] = useState(false)
   const [videoError, setVideoError] = useState(false)
-  const [hardprompt, setHardprompt] = useState(true)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState("")
 
@@ -46,10 +44,9 @@ export default function MotionControl({ profiles }: { profiles: Profile[] }) {
         const result = await invoke<string>("generate_motion", { input: {
           profileId, profileOrder,
           prompt: fields.get("prompt"),
-          useHardprompt: hardprompt,
           aspectRatio: fields.get("ratio"),
           preserveAudio: fields.has("audio"),
-          characterImage, motionVideo, output,
+          characterImage, motionVideo,
         } })
         setStatus(`Saved to ${result}`)
       } catch (error) {
@@ -67,16 +64,12 @@ export default function MotionControl({ profiles }: { profiles: Profile[] }) {
             <FileField label="Motion video" path={motionVideo} onChoose={() => void choose("video", path => { setVideoError(false); setMotionVideo(path) })} />
             {motionVideo && <video key={motionVideo} className="motion-preview" src={convertFileSrc(motionVideo)} controls preload="metadata" aria-label="Motion reference preview" onError={() => setVideoError(true)} />}
             {videoError && <p className="dialog-error" role="status">This video format or codec could not be previewed in WebView2.</p>}
-            <label className="motion-checkbox">
-              <input type="checkbox" checked={hardprompt} onChange={event => setHardprompt(event.target.checked)} />
-              Use hardprompt
-            </label>
-            {hardprompt && <details>
+            <details>
               <summary>View default prompt</summary>
               <p className="motion-default-prompt">{defaultPrompt.trim()}</p>
-            </details>}
-            <label className="motion-field">{hardprompt ? "Additional instructions (optional)" : "Prompt"}
-              <textarea name="prompt" required={!hardprompt} rows={5} placeholder={hardprompt ? "Add instructions for the default prompt." : "Write the full prompt. Use @video and @image to mention the reference files."} />
+            </details>
+            <label className="motion-field">Additional instructions (optional)
+              <textarea name="prompt" rows={5} placeholder="Add instructions for this video." />
             </label>
           </section>
           <section className="motion-card">
@@ -89,13 +82,16 @@ export default function MotionControl({ profiles }: { profiles: Profile[] }) {
               <label className="motion-field">Aspect ratio<select name="ratio"><option>9:16</option><option>16:9</option></select></label>
               <div className="motion-field">Model<span>Omni 1.1 Flash</span></div>
             </div>
-            <FileField label="Output file" path={output} onChoose={() => void choose("output", setOutput)} />
+            <p className="muted">Results are saved automatically in Motion Control inside your download folder.</p>
             <label className="motion-checkbox"><input type="checkbox" name="audio" defaultChecked /> Preserve original audio</label>
             <FFmpegStatus onReady={setFfmpegReady} />
           </section>
         </div>
         <div className="motion-actions">
-          <button type="submit" className="primary" disabled={!characterImage || !motionVideo || !output || !ffmpegReady}>{busy ? "Generating…" : "Generate"}</button>
+          {!busy && (!characterImage || !motionVideo || !ffmpegReady) && <span className="muted">
+            {!characterImage ? "Choose a character image" : !motionVideo ? "Choose a motion video" : "FFmpeg is required"}
+          </span>}
+          <button type="submit" className="primary" disabled={!characterImage || !motionVideo || !ffmpegReady}>{busy ? "Generating…" : "Generate"}</button>
         </div>
       </fieldset>
       {profiles.length === 0 && <p role="status">Add a Google Flow profile to start.</p>}
