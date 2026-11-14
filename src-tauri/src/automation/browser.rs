@@ -236,6 +236,7 @@ impl Browser {
         let (events, pending) = mpsc::channel();
         let token = self.chooser_listener(Some(events), 0)?;
         let result = (|| {
+            self.cdp("Page.enable", json!({}))?;
             self.intercept_file_chooser()?;
             click_upload()?;
             let node = pending.recv_timeout(Duration::from_secs(25))
@@ -248,7 +249,22 @@ impl Browser {
             Ok(())
         })();
         let remove = self.chooser_listener(None, token).map(|_| ());
-        result.and(remove)
+        let reset = self.cdp("Page.setInterceptFileChooserDialog", json!({"enabled": false})).map(|_| ());
+        result.and(remove).and(reset)
+    }
+
+    pub(super) fn click_at(&self, point: &Value) -> Result<(), AutomationError> {
+        let x = point["x"].as_f64().filter(|x| x.is_finite())
+            .ok_or_else(|| failed("Flow upload: invalid button position"))?;
+        let y = point["y"].as_f64().filter(|y| y.is_finite())
+            .ok_or_else(|| failed("Flow upload: invalid button position"))?;
+        self.cdp("Input.dispatchMouseEvent", json!({"type": "mouseMoved", "x": x, "y": y}))?;
+        for (event, buttons) in [("mousePressed", 1), ("mouseReleased", 0)] {
+            self.cdp("Input.dispatchMouseEvent", json!({
+                "type": event, "x": x, "y": y, "button": "left", "buttons": buttons, "clickCount": 1
+            }))?;
+        }
+        Ok(())
     }
 
     fn chooser_listener(

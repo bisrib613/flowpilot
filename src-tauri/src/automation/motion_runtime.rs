@@ -129,7 +129,8 @@ impl FlowVideo for FlowSession<'_> {
             let aliases = [filename, name];
             browser.upload_from_chooser(path, || {
                 step(&browser, "add", Value::Null)?;
-                step(&browser, "upload", Value::Null)
+                let point = wait_stage(&browser, "uploadTarget", Value::Null, 20)?;
+                browser.click_at(&point)
             })?;
             let asset = wait_stage(&browser, "asset", json!({"names": aliases, "kind": kind}), 60).map_err(|error| match error {
                 AutomationError::Failed(message) => failed(format!("{message} ({name})")),

@@ -80,8 +80,24 @@
             return all(settings || document, 'flow-toggles .toggle-text').map(el => el.textContent.trim());
         case 'closeSettings':
             return !visible(settings) || click(document.querySelector('flow-base-prompt-box button.settings-trigger-button'));
-        case 'add': return !!document.querySelector('[role="menu"].add-menu') || click(document.querySelector('header .header-right-container button:first-child'));
-        case 'upload': return click(document.querySelector('[role="menu"].add-menu flow-menu-item[xapfileselectortrigger] button[mat-menu-item]'));
+        case 'add': {
+            const menu = document.querySelector('[role="menu"].add-menu');
+            return visible(menu) || click(document.querySelector('header .header-right-container button:first-child'));
+        }
+        case 'uploadTarget': {
+            const structural = all(document, '[role="menu"].add-menu flow-menu-item[xapfileselectortrigger] button[mat-menu-item]');
+            const labeled = all(document, '[role="menu"] button, [role="dialog"] button')
+                .filter(button => labels(button).some(label => /^(upload media|unggah media)$/i.test(label)));
+            const candidates = structural.length ? structural : labeled;
+            if (candidates.length !== 1) return null;
+            const button = candidates[0];
+            if (button.disabled || button.getAttribute('aria-disabled') === 'true') return null;
+            button.scrollIntoView({block: 'nearest', inline: 'nearest'});
+            const rect = button.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            return button.contains(document.elementFromPoint(x, y)) ? {x, y} : null;
+        }
         case 'asset': {
             if (visible(document.querySelector('flow-upload-consent-dialog'))) return 'consent-required';
             const tiles = all(document, 'flow-grid-tile-container').filter(tile =>
