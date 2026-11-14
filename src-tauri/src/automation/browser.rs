@@ -225,6 +225,7 @@ impl Browser {
         path: &Path,
         click_upload: impl FnOnce() -> Result<(), AutomationError>,
         upload_trace: &str,
+        pointer_fallback: &str,
     ) -> Result<(), AutomationError> {
         let path = local_file(path)?;
         let (events, pending) = mpsc::channel();
@@ -233,7 +234,8 @@ impl Browser {
             self.cdp("Page.enable", json!({}))?;
             self.intercept_file_chooser()?;
             click_upload()?;
-            let deadline = Instant::now() + Duration::from_secs(25);
+            let started = Instant::now();
+            let mut tried_pointer = false;
             let node = loop {
                 match pending.recv_timeout(Duration::from_millis(500)) {
                     Ok(event) => break event?,
@@ -245,7 +247,14 @@ impl Browser {
                         if trace["consent"] == true {
                             return Err(failed("Flow upload: Google showed the upload consent dialog. Approve it in the selected Flow profile before retrying."));
                         }
-                        if Instant::now() >= deadline {
+                        if !tried_pointer && started.elapsed() >= Duration::from_secs(2) {
+                            tried_pointer = true;
+                            let point = self.eval(pointer_fallback)?;
+                            if point.is_object() {
+                                self.click_at(&point)?;
+                            }
+                        }
+                        if started.elapsed() >= Duration::from_secs(25) {
                             return Err(failed(format!(
                                 "Flow upload: WebView2 did not report a file chooser within 25 seconds; observed state: {trace}"
                             )));
@@ -263,6 +272,22 @@ impl Browser {
         let remove = self.chooser_listener(None, token).map(|_| ());
         let reset = self.cdp("Page.setInterceptFileChooserDialog", json!({"enabled": false})).map(|_| ());
         result.and(remove).and(reset)
+    }
+
+    pub(super) fn press_enter(&self) -> Result<(), AutomationError> {
+        for kind in ["rawKeyDown", "keyUp"] {
+            self.cdp("Input.dispatchKeyEvent", json!({
+                "type": kind, "key": "Enter", "code": "Enter",
+                "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13
+            }))?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn hover_at(&self, point: &Value) -> Result<(), AutomationError> {
+        self.cdp("Input.dispatchMouseEvent", json!({
+            "type": "mouseMoved", "x": point["x"], "y": point["y"]
+        })).map(|_| ())
     }
 
     pub(super) fn click_at(&self, point: &Value) -> Result<(), AutomationError> {

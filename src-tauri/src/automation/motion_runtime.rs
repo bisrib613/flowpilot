@@ -18,8 +18,6 @@ use super::{
     AutomationError,
 };
 
-// Omni 1.1 Flash cost in the Armagic reference. Recheck if Flow changes pricing.
-const CLIP_CREDITS: u64 = 15;
 const FLOW: &[&str] = &["flow.google.com"];
 
 fn script(action: &str, value: Value) -> String {
@@ -77,12 +75,6 @@ impl FlowVideo for FlowSession<'_> {
                     "Could not verify credits for the current Flow profile: {error:?}"
                 ))
             })?;
-        if remaining < CLIP_CREDITS {
-            return Err(AutomationError::InsufficientCredits {
-                remaining,
-                required: CLIP_CREDITS,
-            });
-        }
         step(&browser, "closeCredits", Value::Null)?;
         step(&browser, "creditsClosed", Value::Null)?;
         step(&browser, "project", Value::Null)?;
@@ -115,6 +107,13 @@ impl FlowVideo for FlowSession<'_> {
                 });
             }
         }
+        // Flow can omit the price label. Keep Armagic's Omni 1.1 Flash
+        // threshold for the supported 10-second, single-output configuration.
+        let cost = browser.eval(&script("generationCost", Value::Null))?
+            .as_u64().unwrap_or(15);
+        if remaining < cost {
+            return Err(AutomationError::InsufficientCredits { remaining, required: cost });
+        }
         step(&browser, "closeSettings", Value::Null)?;
         let mut assets = [None, None];
         for reference in request.references {
@@ -132,13 +131,20 @@ impl FlowVideo for FlowSession<'_> {
                 let add = wait_stage(&browser, "addTarget", Value::Null, 20)?;
                 browser.click_at(&add)?;
                 step(&browser, "uploadMenuReady", Value::Null)?;
-                let point = wait_stage(&browser, "uploadTarget", Value::Null, 20)?;
-                browser.click_at(&point)
-            }, &script("uploadTrace", Value::Null)).map_err(|error| match error {
+                step(&browser, "focusUpload", Value::Null)?;
+                browser.press_enter()
+            }, &script("uploadTrace", Value::Null), &script("uploadPointerFallback", Value::Null)).map_err(|error| match error {
                 AutomationError::Failed(message) => failed(format!("{kind} upload ({filename}): {message}")),
                 other => other,
             })?;
-            let asset = wait_stage(&browser, "asset", json!({"names": aliases, "kind": kind}), 60).map_err(|error| match error {
+            let reference = json!({"names": aliases, "kind": kind});
+            if kind == "video" {
+                let observed = wait_stage(&browser, "assetHover", reference.clone(), 60)?;
+                if observed.is_object() {
+                    browser.hover_at(&observed)?;
+                }
+            }
+            let asset = wait_stage(&browser, "asset", reference, 60).map_err(|error| match error {
                 AutomationError::Failed(message) => failed(format!("{message} ({name})")),
                 other => other,
             })?;
@@ -175,25 +181,58 @@ impl FlowVideo for FlowSession<'_> {
             asset.as_ref().filter(|_| count > 0).map(|(_, aliases)| json!({"names": aliases, "count": count}))
         }).collect::<Vec<_>>();
         step(&browser, "submitReady", json!({"body": prompt_body, "mentions": expected}))?;
-        let previous = browser.eval(&script("beforeSubmit", Value::Null))?;
-        step(&browser, "focus", Value::Null)?;
+        let snapshot = browser.eval(&script("beforeSubmit", Value::Null))?;
+        let project = snapshot["projectPath"].as_str()
+            .filter(|path| path.starts_with("/project/") && path.len() > "/project/".len())
+            .ok_or_else(|| failed("Could not identify the Flow project before submitting"))?;
+        let previous = snapshot["previous"].as_array()
+            .ok_or_else(|| failed("Could not record previously generated Flow videos"))?;
         let submit = wait_stage(&browser, "submitTarget", Value::Null, 20)?;
-        browser.click_at(&submit).map_err(|_| AutomationError::SubmissionUnconfirmed)?;
-        let submitted = browser.wait(&script("submission", previous.clone()), 30)
-            .map_err(|_| failed("Flow did not confirm that generation started after clicking Generate. Check the project before retrying."))?;
+        let motion = assets[0].as_ref().ok_or_else(|| failed("Missing video reference"))?;
+        let receipt_path = self.folder.join(format!("{}.json", motion.1[1]));
+        let mut receipt = json!({
+            "project": format!("https://flow.google.com{project}"),
+            "profileId": request.profile_id,
+            "reference": motion.1[0],
+            "status": "submission_unconfirmed"
+        });
+        let record = |value: &Value| {
+            let bytes = serde_json::to_vec_pretty(value).map_err(failed)?;
+            crate::atomic_store::write(&receipt_path, &bytes).map_err(failed)
+        };
+        record(&receipt)?;
+        let inspect_project = || failed(format!(
+            "Flow submission could not be resolved. Check https://flow.google.com{project} before retrying."
+        ));
+        browser.click_at(&submit).map_err(|_| inspect_project())?;
+        let submitted = browser.wait(&script("submission", json!(previous)), 120)
+            .map_err(|_| inspect_project())?;
+        receipt["status"] = submitted["status"].clone();
+        record(&receipt)?;
         let result = if submitted["status"] == "pending" {
-            browser.wait(&script("result", previous), 600)
-                .map_err(|_| failed("Flow started generation but did not expose a result within 10 minutes. Check the project before retrying."))?
+            browser.wait(&script("result", json!(previous)), 600)
+                .map_err(|_| inspect_project())?
         } else {
             submitted
         };
+        receipt["status"] = result["status"].clone();
+        record(&receipt)?;
         let url = match result["status"].as_str() {
             Some("complete") => result["url"].as_str().ok_or_else(|| failed("Flow result did not contain a video URL"))?,
             Some("ambiguous") => return Err(failed("Flow returned multiple candidate videos for this segment")),
             _ => return Err(failed("Google Flow reported a generation error")),
         };
         let target = self.folder.join(format!("clip-{}.mp4", Uuid::new_v4()));
-        let size = browser.eval(&script("downloadStart", json!(url)))?.as_u64()
+        let download = script("downloadStart", json!(url));
+        let size = browser.eval(&download).or_else(|first_error| {
+            if !matches!(first_error, AutomationError::Failed(_)) {
+                return Err(first_error);
+            }
+            // Retry the existing result, never its generation request.
+            browser.eval(&download).map_err(|error| failed(format!(
+                "Video download failed after retry: {error:?}. Result is in https://flow.google.com{project}"
+            )))
+        })?.as_u64()
             .filter(|size| *size > 0 && *size <= 128 * 1024 * 1024)
             .ok_or_else(|| failed("Flow returned an invalid download size"))?;
         let result = (|| {
@@ -214,6 +253,8 @@ impl FlowVideo for FlowSession<'_> {
             let _ = fs::remove_file(&target);
             return Err(error);
         }
+        receipt["status"] = json!("downloaded");
+        record(&receipt)?;
         Ok(target)
     }
 }

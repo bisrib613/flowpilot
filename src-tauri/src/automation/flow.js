@@ -86,6 +86,14 @@
             click(target.button);
             return null;
         }
+        case 'generationCost': {
+            if (!visible(settings)) return null;
+            const costs = all(settings, 'a, [aria-label]').flatMap(el => labels(el)
+                .map(label => label.match(/^(\d+(?:[,.]\d{3})*)\s+(?:credits?|kredit)$/i))
+                .filter(Boolean).map(match => Number(match[1].replace(/[,.]/g, ''))));
+            const unique = [...new Set(costs)];
+            return unique.length === 1 && Number.isSafeInteger(unique[0]) ? unique[0] : null;
+        }
         case 'toggleOptions':
             return all(settings || document, 'flow-toggles .toggle-text').map(el => el.textContent.trim());
         case 'closeSettings':
@@ -96,25 +104,36 @@
             return controls.length === 1 ? controlPoint(controls[0]) : null;
         }
         case 'uploadMenuReady': return visible(document.querySelector('[role="menu"].add-menu'));
-        case 'uploadTarget': {
+        case 'focusUpload': {
             const structural = all(document, '[role="menu"].add-menu flow-menu-item[xapfileselectortrigger] button[mat-menu-item]');
             const labeled = all(document, '[role="menu"].add-menu button')
-                .filter(button => labels(button).some(label => /^(upload|upload media|unggah media)$/i.test(label)));
+                .filter(button => labels(button).some(label => /^(upload|upload media|unggah|unggah media)$/i.test(label)));
             const candidates = structural.length ? structural : labeled;
             if (candidates.length !== 1) return null;
             const button = candidates[0];
-            const point = controlPoint(button);
-            if (!point) return null;
-            const trace = {click: 'none'};
+            if (button.disabled || button.getAttribute('aria-disabled') === 'true') return false;
+            button.focus();
+            if (document.activeElement !== button) return false;
+            const trace = {click: 'none', key: 'none', button};
+            button.addEventListener('keydown', event => {
+                trace.key = event.key;
+            }, {capture: true, once: true});
             window.__flowpilotUploadTrace = trace;
             button.addEventListener('click', event => {
                 trace.click = event.isTrusted ? 'trusted' : 'synthetic';
             }, {capture: true, once: true});
-            return point;
+            return true;
+        }
+        case 'uploadPointerFallback': {
+            const trace = window.__flowpilotUploadTrace;
+            if (!trace || trace.click !== 'none' || !trace.button.isConnected) return null;
+            return controlPoint(trace.button);
         }
         case 'uploadTrace':
             return {
                 click: window.__flowpilotUploadTrace?.click || 'none',
+                key: window.__flowpilotUploadTrace?.key || 'none',
+                uploadFocused: !!window.__flowpilotUploadTrace?.button && document.activeElement === window.__flowpilotUploadTrace.button,
                 consent: visible(document.querySelector('flow-upload-consent-dialog')),
                 menuOpen: visible(document.querySelector('[role="menu"].add-menu')),
                 visibility: document.visibilityState,
@@ -125,6 +144,7 @@
                 .filter(button => /^(Start generation|Mulai pembuatan)$/i.test(button.getAttribute('aria-label')));
             return buttons.length === 1 ? controlPoint(buttons[0]) : null;
         }
+        case 'assetHover':
         case 'asset': {
             if (visible(document.querySelector('flow-upload-consent-dialog'))) return 'consent-required';
             const tiles = all(document, 'flow-grid-tile-container').filter(tile =>
@@ -132,6 +152,9 @@
             if (tiles.length !== 1) return null;
             const tile = tiles[0];
             tile.setAttribute('data-flowpilot-reference', '');
+            if (action === 'assetHover') {
+                return controlPoint(tile);
+            }
             const video = tile.querySelector('video');
             const image = tile.querySelector('img[src]');
             const ready = data.kind === 'video'
@@ -173,7 +196,10 @@
         }
         case 'beforeSubmit':
             resultTiles().forEach(tile => tile.setAttribute('data-flowpilot-previous', ''));
-            return [...new Set(resultTiles().map(videoUrl).filter(Boolean).map(videoKey))];
+            return {
+                previous: [...new Set(resultTiles().map(videoUrl).filter(Boolean).map(videoKey))],
+                projectPath: location.pathname
+            };
         case 'downloadStart': return (async () => {
             const url = new URL(data);
             if (url.origin !== 'https://flow-content.google' || !url.pathname.startsWith('/video/')) throw Error('Unexpected Flow video URL');
@@ -208,9 +234,13 @@
         case 'submission':
         case 'result': {
             const newTiles = resultTiles().filter(tile => !tile.hasAttribute('data-flowpilot-previous'));
-            const urls = [...new Set(newTiles.map(videoUrl).filter(url => url && !data.includes(videoKey(url))))];
-            if (urls.length === 1) return {status: 'complete', url: urls[0]};
-            if (urls.length > 1) return {status: 'ambiguous'};
+            const videos = new Map();
+            for (const tile of newTiles) {
+                const url = videoUrl(tile);
+                if (url && !data.includes(videoKey(url))) videos.set(videoKey(url), url);
+            }
+            if (videos.size === 1) return {status: 'complete', url: videos.values().next().value};
+            if (videos.size > 1) return {status: 'ambiguous'};
             const hasState = (tile, selector) => tile.matches(selector) || !!tile.querySelector(selector);
             if (newTiles.some(tile => hasState(tile, '.error-tile, flow-error-tile, .error-message-text'))) return {status: 'error'};
             if (action === 'submission' && newTiles.some(tile => hasState(tile, 'flow-pending-tile, .loading-percentage, .progress-bar, [role="progressbar"]'))) return {status: 'pending'};
