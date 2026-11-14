@@ -185,7 +185,7 @@ impl Browser {
         let result = self.cdp(
             "Runtime.evaluate",
             json!({
-                "expression": expression, "returnByValue": true
+                "expression": expression, "returnByValue": true, "awaitPromise": true
             }),
         )?;
         if result.get("exceptionDetails").is_some() {
@@ -210,13 +210,6 @@ impl Browser {
             }
             thread::sleep(Duration::from_millis(350));
         }
-    }
-
-    pub(super) fn enter(&self) -> Result<(), AutomationError> {
-        for event in ["rawKeyDown", "keyUp"] {
-            self.cdp("Input.dispatchKeyEvent", json!({"type": event, "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13}))?;
-        }
-        Ok(())
     }
 
     pub(super) fn intercept_file_chooser(&self) -> Result<(), AutomationError> {
