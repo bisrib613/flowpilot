@@ -55,7 +55,24 @@
         case 'mode': return click(icon(data));
         case 'modelMenu': return !!exact(document, 'flow-menu-item .label', data) || click(settings?.querySelector('button.mat-mdc-menu-trigger'));
         case 'model': return click(exact(document, 'flow-menu-item .label', data)?.closest('flow-menu-item')?.querySelector('button[mat-menu-item]'));
-        case 'duration': return click(all(settings || document, 'flow-toggles button, flow-toggles [role="button"]').find(el => /^10(?:\s*(?:s|sec|seconds|detik))?$/i.test(el.innerText.trim())));
+        case 'duration':
+        case 'outputCount': {
+            if (!visible(settings)) return null;
+            const pattern = action === 'duration' ? /^(\d+)\s*(?:dtk|detik|s|secs?|seconds?)$/i : /^x(\d+)$/i;
+            const options = all(settings, 'flow-toggles mat-button-toggle').flatMap(toggle => {
+                const label = toggle.querySelector('.toggle-text')?.textContent.trim();
+                const match = label?.match(pattern);
+                const button = toggle.querySelector('button[role="radio"]');
+                return match && button ? [{ value: Number(match[1]), label, button }] : [];
+            });
+            const target = options.find(option => option.value === data);
+            if (!target) return null;
+            if (target.button.getAttribute('aria-checked') === 'true') return true;
+            click(target.button);
+            return null;
+        }
+        case 'toggleOptions':
+            return all(settings || document, 'flow-toggles .toggle-text').map(el => el.textContent.trim());
         case 'closeSettings':
             return !visible(settings) || click(document.querySelector('flow-base-prompt-box button.settings-trigger-button'));
         case 'add': return !!document.querySelector('[role="menu"].add-menu') || click(document.querySelector('header .header-right-container button:first-child'));

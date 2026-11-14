@@ -102,7 +102,18 @@ impl FlowVideo for FlowSession<'_> {
         )?;
         step(&browser, "modelMenu", json!(request.model))?;
         step(&browser, "model", json!(request.model))?;
-        step(&browser, "duration", Value::Null)?;
+        for (action, target) in [("duration", 10), ("outputCount", 1)] {
+            if let Err(error) = step(&browser, action, json!(target)) {
+                return Err(match error {
+                    AutomationError::Failed(message) => {
+                        let options = browser.eval(&script("toggleOptions", Value::Null))
+                            .unwrap_or(Value::Null);
+                        failed(format!("{message}; available options: {options}"))
+                    }
+                    other => other,
+                });
+            }
+        }
         step(&browser, "closeSettings", Value::Null)?;
         browser.intercept_file_chooser()?;
         let mut names = Vec::new();
@@ -235,16 +246,26 @@ impl MotionMedia for Ffmpeg<'_> {
             "-map",
             "0:v:0",
             "-an",
+            "-vf",
+            "fps=30",
             "-c:v",
             "libx264",
             "-pix_fmt",
             "yuv420p",
+            "-flags",
+            "+cgop",
+            "-forced-idr",
+            "1",
+            "-bf",
+            "0",
             "-force_key_frames",
             "expr:gte(t,n_forced*10)",
             "-f",
             "segment",
             "-segment_time",
             "10",
+            "-segment_list",
+            "reference-segments.csv",
             "-reset_timestamps",
             "1",
             "motion-%05d.mp4",
@@ -270,12 +291,28 @@ impl MotionMedia for Ffmpeg<'_> {
         audio: Option<&Path>,
         output: &Path,
     ) -> Result<(), AutomationError> {
+        let segment_list = fs::read_to_string(self.0.join("reference-segments.csv")).map_err(failed)?;
+        let durations = segment_list.lines().enumerate().map(|(index, line)| {
+            let (name, timestamps) = line.split_once(',').ok_or_else(|| failed("Invalid reference segment list"))?;
+            let (start, end) = timestamps.split_once(',').ok_or_else(|| failed("Reference timestamps missing"))?;
+            let duration = end.parse::<f64>().map_err(failed)? - start.parse::<f64>().map_err(failed)?;
+            if name != format!("motion-{index:05}.mp4") || !duration.is_finite() || duration <= 0.0 || duration > 10.001 {
+                return Err(failed("Invalid reference segment duration or order"));
+            }
+            Ok(format!("{duration:.6}"))
+        }).collect::<Result<Vec<_>, _>>()?;
+        if durations.len() != clips.len() {
+            return Err(failed("Generated clip count does not match the reference segments"));
+        }
+
         let mut manifest = String::new();
-        for clip in clips {
-            let name = clip
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| failed("Invalid clip filename"))?;
+        for (index, (clip, duration)) in clips.iter().zip(durations).enumerate() {
+            let name = format!("trimmed-{index:05}.mp4");
+            self.run(&[
+                "-i", filename(clip)?, "-map", "0:v:0", "-an",
+                "-vf", "fps=30", "-t", &duration, "-c:v", "libx264",
+                "-pix_fmt", "yuv420p", &name,
+            ])?;
             manifest.push_str(&format!("file '{name}'\n"));
         }
         fs::write(self.0.join("clips.txt"), manifest).map_err(failed)?;
@@ -290,9 +327,12 @@ impl MotionMedia for Ffmpeg<'_> {
                 "1:a:0?",
                 "-c:a",
                 "aac",
+                "-af",
+                "apad",
+                "-shortest",
             ]);
         } else {
-            args.extend(["-map", "0:v:0", "-map", "0:a:0?", "-c:a", "aac"]);
+            args.extend(["-map", "0:v:0"]);
         }
         args.extend(["-c:v", "copy", "-movflags", "+faststart", "assembled.mp4"]);
         self.run(&args)?;
