@@ -30,17 +30,20 @@ pub fn attach<R: tauri::Runtime>(view: &tauri::Webview<R>) -> Result<(), String>
                 if message["kind"] != "flowpilot-copy-text" { return Ok(()); }
                 let Some(id) = message["id"].as_str().filter(|id| uuid::Uuid::parse_str(id).is_ok()) else { return Ok(()) };
                 let Some(text) = message["text"].as_str().filter(|s| s.len() <= 4_000_000) else { return Ok(()) };
-                let mut visible = windows::core::BOOL::default();
-                unsafe { controller.IsVisible(&mut visible)? };
-                let allowed = visible.as_bool() && crate::webview_manager::is_active_view(&app, &label)
-                    && app.get_window("main").is_some_and(|w| w.is_focused().unwrap_or(false))
-                    && app.get_webview(&label).and_then(|w| w.url().ok()).is_some_and(|current| current == url)
-                    && last.elapsed() >= std::time::Duration::from_millis(200);
+                let rate_allowed = last.elapsed() >= std::time::Duration::from_millis(200);
                 last = std::time::Instant::now();
                 let id = id.to_owned();
                 let text = text.to_owned();
                 let app = app.clone();
                 let label = label.clone();
+                // Do not retain the controller in its own event handler (COM cycle).
+                let Some(view) = app.get_webview(&label) else { return Ok(()) };
+                let _ = view.with_webview(move |platform| {
+                let mut visible = windows::core::BOOL::default();
+                let visible = unsafe { platform.controller().IsVisible(&mut visible) }.is_ok() && visible.as_bool();
+                let allowed = visible && rate_allowed && crate::webview_manager::is_active_view(&app, &label)
+                    && app.get_window("main").is_some_and(|w| w.is_focused().unwrap_or(false))
+                    && app.get_webview(&label).and_then(|w| w.url().ok()).is_some_and(|current| current == url);
                 std::thread::spawn(move || {
                     let ok = allowed && clipboard_win::set_clipboard_string(&text).is_ok();
                     let result = serde_json::json!({"kind": "flowpilot-copy-result", "id": id, "ok": ok}).to_string();
@@ -55,6 +58,7 @@ pub fn attach<R: tauri::Runtime>(view: &tauri::Webview<R>) -> Result<(), String>
                             });
                         }
                     });
+                });
                 });
                 Ok(())
             }));
