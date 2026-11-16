@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-mutate-prompt"
+description = "Allows the mutate_prompt command in the local shell."
+commands.allow = ["mutate_prompt"]
+
+[[permission]]
+identifier = "deny-mutate-prompt"
+description = "Denies the mutate_prompt command."
+commands.deny = ["mutate_prompt"]

@@ -1,3 +1,23 @@
+export type WorkspaceCloseScope = "profile" | "service" | "all"
+export type WorkspaceMemory = Readonly<Partial<Record<string, string>>>
+
+// This is runtime navigation state, not persisted recent-opened history.
+export function rememberWorkspace(memory: WorkspaceMemory, service: string, id: string): WorkspaceMemory {
+  return memory[service] === id ? memory : { ...memory, [service]: id }
+}
+
+export function forgetWorkspaces(memory: WorkspaceMemory, scope: WorkspaceCloseScope, service: string, id: string): WorkspaceMemory {
+  if (scope === "all") return {}
+  if (scope === "profile" && memory[service] !== id) return memory
+  const next = { ...memory }
+  delete next[service]
+  return next
+}
+
+export function resumableAccount<T extends { id: string; service?: string }>(accounts: T[], memory: WorkspaceMemory, service: string): T | undefined {
+  return accounts.find((account) => account.id === memory[service] && (account.service || "flow") === service)
+}
+
 // Profile order controls both neighbors and shortcuts; their limits are independent.
 export function neighborIndices(count: number, active: number, perSide: number): number[] {
   if (active < 0 || active >= count) return []
@@ -8,9 +28,6 @@ export function neighborIndices(count: number, active: number, perSide: number):
     if (active - distance >= 0) result.push(active - distance)
   }
   return result
-}
-export function shortcutBounds(count: number, active: number, before = 0, after = 0): [number, number] {
-  return [Math.max(0, active - 5 - before), Math.min(count, active + 6 + after)]
 }
 export function readPreloadSides(): number {
   try {

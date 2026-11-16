@@ -1,0 +1,149 @@
+name: Trace installer download block
+
+on:
+  push:
+    branches: [feat/claude-platform-relogin-scope-20261102]
+    paths: [.github/workflows/trace-download-block.yml, scripts/trace-download-artifact.py]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  scan-original-artifacts:
+    name: Scan original ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: baseline-1edb4a2
+            artifact: '13263344475'
+            sha256: 1487b6e72f9d3a6874ad71418bd0f520ffcb8c2149ab58e9c15bc2f0bb7933db
+          - variant: diagnostic-before-faker-f241697
+            artifact: '13300668818'
+            sha256: d45cb2f188fcb6df2116d5b8e9f1804d39e50bf3e639d68166ce49c31f3067e0
+          - variant: diagnostic-faker-112cab6
+            artifact: '13303471105'
+            sha256: d6cadf08df0b1df4b06323178435de81312000e1e1086992aed0c69a3ceffe27
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download original ZIP and verify digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/trace-download-artifact.py '${{ matrix.artifact }}' '${{ matrix.sha256 }}'
+      - name: Install local antivirus scanner
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends clamav
+      - name: Update definitions
+        run: |
+          sudo systemctl stop clamav-freshclam || true
+          sudo timeout 180 freshclam --verbose > definition-update.log 2>&1
+      - name: Scan ZIP and extracted installer without execution
+        if: success()
+        shell: bash
+        run: |
+          clamscan --version | tee scanner-version.txt
+          set +e
+          clamscan --recursive --max-filesize=30M --max-scansize=150M --alert-exceeds-max=yes trace-artifact > scan.log 2>&1
+          result=$?
+          cat scan.log
+          echo "exit_code=$result" | tee scan-result.txt
+          if [ "$result" -eq 1 ]; then echo '::error::Scanner detected a threat; inspect scan.log'; fi
+          if [ "$result" -gt 1 ]; then echo '::error::Scan failed; no clean verdict can be claimed'; fi
+          exit "$result"
+      - name: Upload investigation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: download-block-trace-${{ matrix.variant }}
+          path: |
+            trace-files.json
+            definition-update.log
+            scanner-version.txt
+            scan.log
+            scan-result.txt
+          retention-days: 7
+
+  compare-builds:
+    name: Build latest ${{ matrix.variant }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: normal
+            flags: ''
+          - variant: diagnostic
+            flags: '--features diag'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        env:
+          CYPRESS_INSTALL_BINARY: '0'
+        run: npm ci
+      - name: Set same preview version for both builds
+        shell: pwsh
+        run: |
+          npm version 1.5.15 --no-git-tag-version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $p = 'src-tauri/Cargo.toml'
+          $text = Get-Content $p -Raw
+          $text = [regex]::Replace($text, '(?m)^version = "\d+\.\d+\.\d+"', 'version = "1.5.15"', 1)
+          [IO.File]::WriteAllText((Resolve-Path $p), $text)
+          $p = 'src-tauri/tauri.pr-test.conf.json'
+          $config = Get-Content $p -Raw | ConvertFrom-Json
+          $config | Add-Member -NotePropertyName version -NotePropertyValue '1.5.15' -Force
+          $config | ConvertTo-Json -Depth 30 | Set-Content $p -Encoding utf8NoBOM
+      - name: Build installer
+        run: npm run tauri -- build ${{ matrix.flags }} --bundles nsis --config src-tauri/tauri.pr-test.conf.json
+      - name: Record hashes and signatures
+        shell: pwsh
+        run: |
+          $files = @('src-tauri/target/release/flowpilot.exe') + @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | ForEach-Object FullName)
+          $records = foreach ($file in $files) {
+            $sig = Get-AuthenticodeSignature $file
+            @{name=(Split-Path $file -Leaf); sha256=(Get-FileHash $file -Algorithm SHA256).Hash; signatureStatus=$sig.Status.ToString()}
+          }
+          $records | ConvertTo-Json -Depth 5 | Set-Content build-metadata.json
+      - name: Scan rebuilt executables with Defender when available
+        shell: pwsh
+        run: |
+          $record = @{status='unavailable'; scanStarted=$false}
+          try {
+            $status = Get-MpComputerStatus -ErrorAction Stop
+            $record.engine = $status.AMEngineVersion
+            $record.definitions = $status.AntivirusSignatureVersion
+            if (-not $status.AntivirusEnabled -or -not $status.AMServiceEnabled) { throw 'Defender is not active on this runner' }
+            New-Item -ItemType Directory -Force -Path defender-scan-input | Out-Null
+            Copy-Item src-tauri/target/release/flowpilot.exe defender-scan-input/app.exe
+            Copy-Item src-tauri/target/release/bundle/nsis/*.exe defender-scan-input/
+            $since = Get-Date
+            Start-MpScan -ScanType CustomScan -ScanPath (Resolve-Path 'defender-scan-input') -ErrorAction Stop
+            $record.scanStarted = $true
+            $record.status = 'scan-returned; inspect detections'
+            $record.detections = @(Get-MpThreatDetection -ErrorAction Stop | Where-Object { $_.InitialDetectionTime -ge $since })
+          } catch { $record.error = $_.Exception.Message }
+          $record | ConvertTo-Json -Depth 8 | Set-Content defender-result.json
+          Get-Content defender-result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: comparison-${{ matrix.variant }}-not-cleared-for-install
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            build-metadata.json
+            defender-result.json
+          retention-days: 7

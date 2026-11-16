@@ -1,0 +1,47 @@
+.prompt-library { width: 100%; min-width: 0; }
+.prompt-library header, .prompt-filters, .prompt-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.prompt-library header { justify-content: space-between; }
+.prompt-filters { margin: 20px 0; }
+.prompt-filters input { flex: 1; min-width: 160px; }
+.prompt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 16px; }
+.prompt-card { background: #e1e3e4; color: #20282c; border: 1px solid #a5aaad; border-top: 4px solid #68777d; border-radius: 8px; padding: 18px; min-width: 0; }
+.prompt-color-blue { border-top-color: #365f89; }
+.prompt-color-purple { border-top-color: #705485; }
+.prompt-color-green { border-top-color: #416f55; }
+.prompt-color-orange { border-top-color: #95602b; }
+.prompt-color-red { border-top-color: #934d4d; }
+.prompt-title { display: block; text-align: left; font-size: 16px; font-weight: 650; background: transparent; color: inherit; padding: 0; margin-bottom: 8px; overflow-wrap: anywhere; }
+.prompt-preview { white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; min-height: 5em; }
+.prompt-actions button, .prompt-actions select { padding: 6px 9px; }
+.prompt-dialog { max-height: 85vh; overflow-y: auto; }
+.prompt-dialog label { display: grid; gap: 6px; margin: 12px 0; }
+.prompt-dialog textarea { width: 100%; box-sizing: border-box; resize: vertical; background: #eef0f0; color: #20282c; border: 1px solid #788287; border-radius: 6px; padding: 10px; font: inherit; }
+.prompt-detail { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 55vh; overflow: auto; margin-top: 16px; }
+.prompt-library button:focus-visible, .prompt-library select:focus-visible, .prompt-library textarea:focus-visible { outline: 2px solid #244f79; outline-offset: 3px; }
+/* The extra services and library entry must remain reachable at minimum height. */
+/* Keep utility navigation visible; scroll the growing platform list independently. */
+.app > aside { overflow: hidden; }
+.app > aside > * { flex-shrink: 0; }
+.app > aside > .service-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 64px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  gap: 4px;
+  padding-right: 2px;
+  scrollbar-width: thin;
+}
+.app > aside > .service-list > button { flex: 0 0 40px; }
+.app > aside > .sidebar-spacer { flex: 0 0 8px; min-height: 8px; }
+.app > aside > .side-bottom { margin-top: 8px; }
+
+.app > .content.prompts-page { padding: 24px; overflow-y: auto; }
+.prompt-filters input, .prompt-filters select, .prompt-actions select, .prompt-dialog input {
+  min-height: 36px; padding: 6px 10px; background: var(--raised); color: var(--text);
+  border: 1px solid var(--control); border-radius: 6px; font: inherit;
+}
+.prompt-dialog input { width: 100%; min-width: 0; }
+.prompt-actions button:hover { background: var(--selected); border-radius: 5px; }
+@media (max-width: 800px) { .app > .content.prompts-page { padding: 16px; } }

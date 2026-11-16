@@ -1,5 +1,8 @@
 {
   "bundle": {
     "createUpdaterArtifacts": false
+  },
+  "build": {
+    "beforeBuildCommand": "npm run build"
   }
 }

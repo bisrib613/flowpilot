@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-list-prompts"
+description = "Allows the list_prompts command in the local shell."
+commands.allow = ["list_prompts"]
+
+[[permission]]
+identifier = "deny-list-prompts"
+description = "Denies the list_prompts command."
+commands.deny = ["list_prompts"]
