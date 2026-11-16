@@ -224,6 +224,7 @@ export default function App() {
     setDeleteError("")
     const removing = dialog
     try {
+      await saveAccounts(accounts)
       const profileCleaned = await invoke<boolean>("remove_google_flow_account", {
         accountId: removing.id,
         service: serviceOf(removing),

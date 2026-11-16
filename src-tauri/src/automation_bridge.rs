@@ -1,13 +1,17 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufReader, Read, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
     path::PathBuf,
     sync::mpsc,
     time::Duration,
 };
 use tauri::{path::BaseDirectory, AppHandle, Manager};
+
+pub(crate) fn enabled() -> bool {
+    std::env::var("FLOWPILOT_AUTOMATION_CDP").as_deref() == Ok("1")
+}
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
@@ -47,18 +51,32 @@ fn open_session(app: &AppHandle, account_id: String) -> Result<OpenSessionRespon
     Ok(OpenSessionResponse { cdp_endpoint: format!("http://127.0.0.1:{port}") })
 }
 
+fn read_header_line(reader: &mut BufReader<TcpStream>, line: &mut String, total: &mut usize, deadline: std::time::Instant) -> Result<(), String> {
+    loop {
+        if std::time::Instant::now() >= deadline || *total >= 8192 { return Err("HTTP headers exceed limits".into()); }
+        let mut byte = [0];
+        if reader.read(&mut byte).map_err(|e| e.to_string())? == 0 { return Err("Incomplete HTTP headers".into()); }
+        *total += 1;
+        if !byte[0].is_ascii() { return Err("Invalid HTTP header".into()); }
+        line.push(byte[0] as char);
+        if byte[0] == b'\n' { return Ok(()); }
+    }
+}
+
 fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), String> {
     stream.set_read_timeout(Some(Duration::from_secs(5))).map_err(|error| error.to_string())?;
     let mut reader = BufReader::new(stream.try_clone().map_err(|error| error.to_string())?);
     let mut request_line = String::new();
-    reader.read_line(&mut request_line).map_err(|error| error.to_string())?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut header_bytes = 0;
+    read_header_line(&mut reader, &mut request_line, &mut header_bytes, deadline)?;
     let mut parts = request_line.split_whitespace();
     let route = format!("{} {}", parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
     let mut content_length = 0usize;
     let mut authorization = String::new();
     loop {
         let mut line = String::new();
-        reader.read_line(&mut line).map_err(|error| error.to_string())?;
+        read_header_line(&mut reader, &mut line, &mut header_bytes, deadline)?;
         if line == "\r\n" || line.is_empty() { break; }
         let Some((name, value)) = line.split_once(':') else { continue };
         match name.trim().to_ascii_lowercase().as_str() {
@@ -105,6 +123,10 @@ fn handle_connection(app: &AppHandle, token: &str, mut stream: TcpStream) {
 }
 
 pub fn start(app: AppHandle) -> Result<(), String> {
+    if !enabled() {
+        if let Ok(path) = descriptor_path(&app) { let _ = fs::remove_file(path); }
+        return Ok(());
+    }
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|error| error.to_string())?;
     let port = listener.local_addr().map_err(|error| error.to_string())?.port();
     let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());

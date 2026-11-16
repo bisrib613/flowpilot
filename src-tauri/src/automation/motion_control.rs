@@ -14,6 +14,7 @@ pub(crate) struct MotionControlRequest<'a> {
     pub(crate) motion_video: &'a Path,
     pub(crate) output: &'a Path,
     pub(crate) preserve_audio: bool,
+    pub(crate) completed_clips: &'a [PathBuf],
 }
 
 pub(crate) trait MotionMedia {
@@ -24,6 +25,8 @@ pub(crate) trait MotionMedia {
         motion_video: &Path,
         model: &str,
     ) -> Result<Vec<PathBuf>, AutomationError>;
+
+    fn checkpoint(&mut self, _clips: &[PathBuf]) -> Result<(), AutomationError> { Ok(()) }
 
     /// Assemble the downloaded clips in order and write the requested output.
     fn finish(
@@ -62,9 +65,12 @@ pub(crate) fn generate(
         )));
     }
 
-    let mut clips = Vec::with_capacity(segments.len());
+    if request.completed_clips.len() > segments.len() || request.completed_clips.iter().any(|path| !path.is_file()) {
+        return Err(MotionControlError::Prepare(AutomationError::InvalidInput("Saved clips are missing or invalid")));
+    }
+    let mut clips = request.completed_clips.to_vec();
     let mut profiles = request.profile_ids.iter().peekable();
-    for (index, segment) in segments.into_iter().enumerate() {
+    for (index, segment) in segments.into_iter().enumerate().skip(request.completed_clips.len()) {
         let references = [
             FlowReference::MotionVideo(segment),
             FlowReference::Image(request.character_image.to_path_buf()),
@@ -83,6 +89,9 @@ pub(crate) fn generate(
             match result {
                 Ok(clip) => {
                     clips.push(clip);
+                    media.checkpoint(&clips).map_err(|source| MotionControlError::Generate {
+                        segment: index + 1, completed_clips: clips.clone(), source,
+                    })?;
                     break;
                 }
                 Err(AutomationError::InsufficientCredits { .. }) => {
@@ -111,4 +120,56 @@ pub(crate) fn generate(
     }
 
     Ok(request.output.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Media { segments: Vec<PathBuf>, checkpoints: Vec<Vec<PathBuf>>, finished: Vec<PathBuf> }
+    impl MotionMedia for Media {
+        fn prepare(&mut self, _: &Path, _: &str) -> Result<Vec<PathBuf>, AutomationError> { Ok(self.segments.clone()) }
+        fn checkpoint(&mut self, clips: &[PathBuf]) -> Result<(), AutomationError> { self.checkpoints.push(clips.to_vec()); Ok(()) }
+        fn finish(&mut self, clips: &[PathBuf], _: Option<&Path>, _: &Path) -> Result<(), AutomationError> { self.finished = clips.to_vec(); Ok(()) }
+    }
+    struct Flow { calls: Vec<String>, fail_first: bool }
+    impl FlowVideo for Flow {
+        fn generate_video(&mut self, r: FlowVideoRequest<'_>) -> Result<PathBuf, AutomationError> {
+            self.calls.push(r.profile_id.into());
+            if self.fail_first && self.calls.len() == 1 { return Err(AutomationError::InsufficientCredits { remaining: 0, required: 15 }); }
+            Ok(PathBuf::from(format!("clip-{}", self.calls.len())))
+        }
+    }
+    fn request<'a>(profiles: &'a [String], completed: &'a [PathBuf]) -> MotionControlRequest<'a> {
+        MotionControlRequest { profile_ids: profiles, completed_clips: completed, prompt: "test", model: "test", aspect_ratio: "9:16",
+            character_image: Path::new("image"), motion_video: Path::new("motion"), output: Path::new("output"), preserve_audio: false }
+    }
+    #[test]
+    fn resumes_without_regenerating_a_completed_segment() {
+        let path = std::env::temp_dir().join(format!("flowpilot-resume-test-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"fixture").unwrap();
+        let mut media = Media { segments: vec!["one".into(), "two".into()], checkpoints: vec![], finished: vec![] };
+        let mut flow = Flow { calls: vec![], fail_first: false };
+        generate(&mut flow, &mut media, request(&["a".into()], &[path.clone()])).unwrap();
+        assert_eq!(flow.calls, vec!["a"]);
+        assert_eq!(media.finished[0], path);
+        assert_eq!(media.checkpoints[0].len(), 2);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn insufficient_credits_switches_profile_without_skipping_segment() {
+        let mut media = Media { segments: vec!["one".into(), "two".into()], checkpoints: vec![], finished: vec![] };
+        let mut flow = Flow { calls: vec![], fail_first: true };
+        generate(&mut flow, &mut media, request(&["a".into(), "b".into()], &[])).unwrap();
+        assert_eq!(flow.calls, vec!["a", "b", "b"]);
+        assert_eq!(media.checkpoints.len(), 2);
+        assert_eq!(media.finished.len(), 2);
+    }
+    #[test]
+    fn missing_saved_clip_fails_before_spending_credits() {
+        let mut media = Media { segments: vec!["one".into()], checkpoints: vec![], finished: vec![] };
+        let mut flow = Flow { calls: vec![], fail_first: false };
+        let missing = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        assert!(generate(&mut flow, &mut media, request(&["a".into()], &[missing])).is_err());
+        assert!(flow.calls.is_empty());
+    }
 }

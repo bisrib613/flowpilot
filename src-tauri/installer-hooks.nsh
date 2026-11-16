@@ -4,7 +4,6 @@
   ; Refuse to alter the installed app if the metadata backup cannot be made.
   ${If} $FlowpilotRollbackConfirmed = 1
     IfFileExists "$LOCALAPPDATA\\com.flowpilot.desktop\\accounts.json" 0 flowpilot_rollback_backup_done
-    IfFileExists "$LOCALAPPDATA\\com.flowpilot.desktop\\accounts.rollback-backup.json" flowpilot_rollback_backup_done 0
     ClearErrors
     CopyFiles /SILENT /FILESONLY "$LOCALAPPDATA\\com.flowpilot.desktop\\accounts.json" "$LOCALAPPDATA\\com.flowpilot.desktop\\accounts.rollback-backup.json"
     IfErrors 0 flowpilot_rollback_backup_done

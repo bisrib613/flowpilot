@@ -3,6 +3,6 @@
     "createUpdaterArtifacts": false
   },
   "build": {
-    "beforeBuildCommand": "npx tsc -b && npx vite build"
+    "beforeBuildCommand": "npm run build"
   }
 }

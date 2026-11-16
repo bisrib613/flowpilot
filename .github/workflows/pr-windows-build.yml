@@ -30,7 +30,7 @@ jobs:
       - name: Set PR-only installer version (v1.3.2 feature integration)
         shell: pwsh
         run: |
-          $version = "1.5.39"
+          $version = "1.5.40"
           npm version $version --no-git-tag-version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -43,9 +43,13 @@ jobs:
           $config = Get-Content $configPath -Raw | ConvertFrom-Json
           $config | Add-Member -NotePropertyName version -NotePropertyValue $version -Force
           $config | ConvertTo-Json -Depth 30 | Set-Content $configPath -Encoding utf8NoBOM
-      # Run behavioral checks locally; CI packages the reviewable PR installer.
+      - name: Refresh package version in lockfile
+        run: cargo update --manifest-path src-tauri/Cargo.toml --package flowpilot
+      # Both behavior and compilation gate the installer.
       - name: Compile frontend
-        run: npx tsc -b && npx vite build
+        run: npm run build
+      - name: Test native code
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
       - name: Build Windows NSIS installer
         run: npm run tauri -- build --bundles nsis --config src-tauri/tauri.pr-test.conf.json
       - name: Upload installer for testing (not a release)

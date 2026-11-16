@@ -28,7 +28,7 @@
     const dialog = all(document, '[role="dialog"]').at(-1);
     const inputs = dialog ? all(dialog, '[data-lexical-editor="true"][contenteditable="true"]') : [];
     const buttons = 'button, [role="button"]';
-    const linkPattern = data.platform === 'pinterest' ? /^\/pin\/\d+\/?$/ : /^\/@[^/]+\/post\/[^/]+\/?$/;
+    const linkPattern = data?.platform === 'pinterest' ? /^\/pin\/\d+\/?$/ : /^\/@[^/]+\/post\/[^/]+\/?$/;
     const links = () => all(document, 'a[href]').map(a => new URL(a.href))
         .filter(url => url.origin === location.origin && linkPattern.test(url.pathname))
         .map(url => url.origin + url.pathname);

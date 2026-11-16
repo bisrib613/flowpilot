@@ -4,6 +4,7 @@ mod ffmpeg;
 use std::time::Duration;
 use tauri::Emitter;
 
+mod clipboard_recovery;
 mod account_store;
 mod atomic_store;
 mod prompt_store;
@@ -14,8 +15,7 @@ mod webview_setup;
 mod webview_health;
 mod native_downloads;
 mod download_settings;
-mod webview_download_bridge;
-mod dialog_thread_experiment;
+mod diagnostics;
 mod automation_bridge;
 mod automation;
 #[cfg(all(windows, feature = "diag"))]
@@ -390,6 +390,13 @@ mod flow_location_tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .setup(|app| {
             automation_bridge::start(app.handle().clone()).map_err(std::io::Error::other)?;
             Ok(())
@@ -397,12 +404,13 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(webview_manager::WebviewManager::default())
-        .manage(webview_download_bridge::DownloadState::default())
         .invoke_handler(tauri::generate_handler![
             choose_motion_file,
             ffmpeg_status,
             install_ffmpeg,
             generate_motion,
+            resume_motion,
+            cancel_motion,
             download_settings::get_download_folder,
             download_settings::choose_download_folder,
             download_settings::open_download_folder,
@@ -415,13 +423,6 @@ pub fn run() {
             navigate_service_bookmark,
             remove_google_flow_account,
             clear_google_flow_cache,
-            webview_download_bridge::begin_blob_download,
-            webview_download_bridge::write_blob_download_chunk,
-            webview_download_bridge::complete_blob_download,
-            webview_download_bridge::cancel_blob_download,
-            dialog_thread_experiment::debug_trigger_isolated_dialog,
-            #[cfg(all(windows, feature = "diag"))]
-            webview_download_bridge::diagnostic_save_file,
             check_flow_profile,
             run_bulk_shared_login,
             name_generator::name_generator_status,
@@ -501,4 +502,17 @@ async fn install_ffmpeg(app: tauri::AppHandle) -> Result<&'static str, String> {
         let _ = app;
         Err("Managed FFmpeg is available on Windows".into())
     }
+}
+
+#[tauri::command]
+async fn resume_motion(app: tauri::AppHandle, job_id: String) -> Result<String, String> {
+    #[cfg(windows)]
+    return tauri::async_runtime::spawn_blocking(move || automation::motion_runtime::resume(app, job_id)).await.map_err(|e| e.to_string())?;
+    #[cfg(not(windows))]
+    { let _ = (app, job_id); Err("Motion Control requires Windows".into()) }
+}
+#[tauri::command]
+fn cancel_motion() {
+    #[cfg(windows)]
+    automation::motion_runtime::cancel();
 }

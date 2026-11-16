@@ -252,7 +252,7 @@ fn attach_view_health<R: Runtime>(view: &tauri::Webview<R>, health: Arc<ViewHeal
                         _ => Failure::Other,
                     };
                     process_health.record(failure);
-                    crate::webview_download_bridge::diag("NativeProcessFailed", &format!("webview={} kind={}", label, kind.0));
+                    crate::diagnostics::diag("NativeProcessFailed", &format!("webview={} kind={}", label, kind.0));
                 }
                 Ok(())
             })), &mut token) }.map_err(|e| e.to_string())?;
@@ -306,8 +306,22 @@ fn reserve_loopback_port() -> Result<u16, String> {
     listener.local_addr().map(|address| address.port()).map_err(|error| error.to_string())
 }
 
+fn browser_environment(state: &WebviewManager, key: &str) -> Result<Option<(u16, String)>, String> {
+    if !key.starts_with("flow-") { return Ok(None); }
+    let mut ports = state.browser_profile_ports.lock().map_err(|_| "webview state unavailable")?;
+    let port = match ports.get(key) {
+        Some(port) => *port,
+        None => { let port = reserve_loopback_port()?; ports.insert(key.into(), port); port }
+    };
+    Ok(Some((port, flow_browser_args(port))))
+}
+
 fn flow_browser_args(port: u16) -> String {
-    format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={port} --remote-allow-origins=*")
+    if crate::automation_bridge::enabled() {
+        format!("--disable-features=msWebOOUI,msPdfOOUI --remote-debugging-port={port}")
+    } else {
+        "--disable-features=msWebOOUI,msPdfOOUI".to_string()
+    }
 }
 
 
@@ -345,7 +359,7 @@ fn attach_webview_permissions<R: Runtime>(
                         let Some(args) = args else { return Ok(()); };
                         let mut kind = Default::default();
                         args.PermissionKind(&mut kind)?;
-                        crate::webview_download_bridge::diag("PermissionRequested", &format!("webview={} kind={}", diagnostic_label, kind.0));
+                        crate::diagnostics::diag("PermissionRequested", &format!("webview={} kind={}", diagnostic_label, kind.0));
                         if kind != COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS {
                             return Ok(());
                         }
@@ -475,8 +489,13 @@ fn begin_windows_disk_cache_clear<R: Runtime>(
                 .map_err(|_| "invalid maintenance WebView URL")?,
         );
         let builder = WebviewBuilder::new(maintenance_label.clone(), url)
-            .data_directory(profile)
+            .data_directory(profile.clone())
             .focused(false);
+        let storage_key = profile.file_name().and_then(|s| s.to_str()).ok_or("Invalid profile path")?;
+        let builder = match browser_environment(&app.state::<WebviewManager>(), storage_key)? {
+            Some((_, args)) => builder.additional_browser_args(&args),
+            None => builder,
+        };
         let webview = window
             .add_child(
                 builder,
@@ -614,7 +633,7 @@ fn open_view<R: Runtime>(
         .ok_or_else(|| "main window not found".to_string())?;
 
     let requested_label = webview_label(&key);
-    crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=open-request background={}", requested_label, background));
+    crate::diagnostics::diag("WorkspaceLifecycle", &format!("webview={} action=open-request background={}", requested_label, background));
     let active_account = state
         .active_account_id
         .lock()
@@ -650,7 +669,7 @@ fn open_view<R: Runtime>(
         // Windows input focus. Clipboard and user-gesture downloads depend
         // on the active view receiving the actual pointer/keyboard action.
         webview.set_focus().map_err(|error| error.to_string())?;
-        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=restored-focus-requested", requested_label));
+        crate::diagnostics::diag("WorkspaceLifecycle", &format!("webview={} action=restored-focus-requested", requested_label));
         *state
             .active_account_id
             .lock()
@@ -672,20 +691,7 @@ fn open_view<R: Runtime>(
     let popup_prefix = format!("{requested_label}-popup-");
     let popup_profile = profile.clone();
     // Every WebView sharing the Flow directory must use identical browser arguments.
-    let flow_environment = if storage_key.starts_with("flow-") {
-        let mut ports = state.browser_profile_ports.lock().map_err(|_| "webview state unavailable")?;
-        let port = match ports.get(&storage_key) {
-            Some(port) => *port,
-            None => {
-                let port = reserve_loopback_port()?;
-                ports.insert(storage_key.clone(), port);
-                port
-            }
-        };
-        Some((port, flow_browser_args(port)))
-    } else {
-        None
-    };
+    let flow_environment = browser_environment(&state, &storage_key)?;
     let popup_flow_args = flow_environment.as_ref().map(|(_, args)| args.clone());
     let builder = if let Some((_, browser_args)) = &flow_environment {
         flow_builder(requested_label.clone(), url, profile, browser_args)
@@ -695,6 +701,7 @@ fn open_view<R: Runtime>(
             
     }
         .focused(!background)
+        .initialization_script(include_str!("clipboard_recovery.js"))
         .initialization_script(if cfg!(all(windows, feature = "diag")) {
             include_str!("webview_interaction_diagnostics.js")
         } else { "" })
@@ -766,6 +773,7 @@ fn open_view<R: Runtime>(
             .get(&key).ok_or("new WebView is not tracked")?.health.clone();
         attach_view_health(&view, health)?;
         attach_webview_permissions(&view)?;
+        crate::clipboard_recovery::attach(&view)?;
         if let Some((port, _)) = flow_environment {
             state.automation_ports.lock().map_err(|_| "webview state unavailable")?.insert(key.clone(), port);
         }
@@ -776,7 +784,7 @@ fn open_view<R: Runtime>(
             view
                 .with_webview(move |platform| {
                     if let Err(error) = crate::webview_diagnostics::attach(&platform.controller(), &platform.environment(), &diagnostic_label) {
-                        crate::webview_download_bridge::diag("InstrumentationAttachFailed", &format!("webview={} available=0", diagnostic_label));
+                        crate::diagnostics::diag("InstrumentationAttachFailed", &format!("webview={} available=0", diagnostic_label));
                         eprintln!("[flowpilot-diag] native instrumentation unavailable: {error}");
                     }
                 })
@@ -785,13 +793,13 @@ fn open_view<R: Runtime>(
 
         if background {
             view.hide().map_err(|e| e.to_string())?;
-            crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=preloaded-hidden", requested_label));
+            crate::diagnostics::diag("WorkspaceLifecycle", &format!("webview={} action=preloaded-hidden", requested_label));
             return Ok(());
         }
         // Match the cached-view path: creation alone does not explicitly transfer
         // native input focus to the newly displayed service child.
         view.set_focus().map_err(|error| error.to_string())?;
-        crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=created-focus-requested", requested_label));
+        crate::diagnostics::diag("WorkspaceLifecycle", &format!("webview={} action=created-focus-requested", requested_label));
         *state
             .active_account_id
             .lock()
@@ -803,6 +811,7 @@ fn open_view<R: Runtime>(
 }
 
 pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: String) -> Result<u16, String> {
+    if !crate::automation_bridge::enabled() { return Err("External CDP automation is disabled. Enable FLOWPILOT_AUTOMATION_CDP=1 before starting Flowpilot.".into()); }
     validate_account_id(&account_id)?;
     let accounts = crate::account_store::load_accounts(app.clone())?
         .ok_or_else(|| "FlowPilot has no saved accounts".to_string())?;
@@ -819,9 +828,8 @@ pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: Strin
     let profile = profile_path(app, &key)?;
     let regular_label = webview_label(&key);
     if let Some(webview) = app.get_webview(&regular_label) {
-        webview.navigate(service_url("flow")?.parse().map_err(|_| "invalid Flow URL")?)
-            .map_err(|error| error.to_string())?;
-        webview.show().map_err(|error| error.to_string())?;
+        // Attach to the existing page without navigating away from a user's project.
+        // A hidden child stays hidden; opening automation must not overlay another service.
         touch_account(&state, &key)?;
         return state.automation_ports.lock().map_err(|_| "webview state unavailable".to_string())?
             .get(&key).copied()
@@ -830,8 +838,7 @@ pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: Strin
 
     let label = format!("{AUTOMATION_LABEL_PREFIX}-{key}");
     if let Some(window) = app.get_webview_window(&label) {
-        window.navigate(service_url("flow")?.parse().map_err(|_| "invalid Flow URL")?)
-            .map_err(|error| error.to_string())?;
+
         window.show().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
         touch_account(&state, &key)?;
@@ -840,8 +847,7 @@ pub fn open_automation_session<R: Runtime>(app: &AppHandle<R>, account_id: Strin
             .ok_or_else(|| "The Flow automation window has no registered endpoint. Restart FlowPilot.".to_string());
     }
 
-    let port = reserve_loopback_port()?;
-    let browser_args = flow_browser_args(port);
+    let (port, browser_args) = browser_environment(&state, &key)?.ok_or("Missing Flow environment")?;
     tauri::WebviewWindowBuilder::new(
         app,
         label.clone(),
@@ -1043,14 +1049,16 @@ fn cancel_preloads(state: &WebviewManager) -> Result<u64, String> {
 }
 
 fn destroy_view<R: Runtime>(app: &AppHandle<R>, key: &str) -> Result<(), String> {
-    crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=destroy", webview_label(key)));
+    crate::diagnostics::diag("WorkspaceLifecycle", &format!("webview={} action=destroy", webview_label(key)));
     let state = app.state::<WebviewManager>();
     let label = webview_label(key);
     for (popup_label, popup) in app.webview_windows() {
         if popup_label.starts_with(&format!("{label}-popup-")) { popup.close().map_err(|e| e.to_string())?; }
     }
-    crate::webview_download_bridge::cancel_for_webview(&app.state::<crate::webview_download_bridge::DownloadState>(), &label);
     if let Some(webview) = app.get_webview(&label) { webview.close().map_err(|e| e.to_string())?; }
+    if let Some(window) = app.get_webview_window(&format!("{AUTOMATION_LABEL_PREFIX}-{key}")) {
+        window.destroy().map_err(|e| e.to_string())?;
+    }
     state.cached_accounts.lock().map_err(|_| "webview state unavailable")?.remove(key);
     state.automation_ports.lock().map_err(|_| "webview state unavailable")?.remove(key);
     let mut active = state.active_account_id.lock().map_err(|_| "webview state unavailable")?;
@@ -1064,7 +1072,11 @@ fn destroy_views<R: Runtime>(app: &AppHandle<R>, service: Option<&str>, keep: &[
     let state = app.state::<WebviewManager>();
     let keys: Vec<String> = state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
         .keys().filter(|key| service.map_or(true, |s| key.starts_with(&format!("{s}-"))) && !keep.contains(key)).cloned().collect();
-    for key in keys { destroy_view(app, &key)?; }
+    for key in keys {
+        if !keep.is_empty() && (crate::native_downloads::is_downloading(&webview_label(&key))
+            || app.get_webview_window(&format!("{AUTOMATION_LABEL_PREFIX}-{key}")).is_some()) { continue; }
+        destroy_view(app, &key)?;
+    }
     Ok(())
 }
 
@@ -1076,6 +1088,17 @@ pub fn prepare_workspace<R: Runtime>(app: &AppHandle<R>, account_id: String, ser
     for id in &neighbors { keep.push(profile_key(&service, id)?); }
     let epoch = cancel_preloads(&state)?;
     destroy_views(app, Some(&service), &keep)?;
+    let active = state.active_account_id.lock().map_err(|_| "webview state unavailable")?.clone();
+    let mut candidates: Vec<_> = state.cached_accounts.lock().map_err(|_| "webview state unavailable")?
+        .iter().filter(|(key, _)| !keep.contains(key) && active.as_ref() != Some(*key)
+            && !crate::native_downloads::is_downloading(&webview_label(key))
+            && app.get_webview_window(&format!("{AUTOMATION_LABEL_PREFIX}-{key}")).is_none())
+        .map(|(key, entry)| (key.clone(), entry.revision)).collect();
+    candidates.sort_by_key(|(_, revision)| *revision);
+    let current = state.cached_accounts.lock().map_err(|_| "webview state unavailable")?.len();
+    for (key, _) in candidates.into_iter().take(current.saturating_add(keep.len()).saturating_sub(16)) {
+        destroy_view(app, &key)?;
+    }
     open(app, account_id, service, x, y, width, height)?;
     *state.preload_targets.lock().map_err(|_| "webview state unavailable")? = keep;
     Ok(epoch)
@@ -1091,6 +1114,8 @@ pub fn preload_workspace<R: Runtime>(app: &AppHandle<R>, account_id: String, ser
 }
 
 pub fn close_workspaces<R: Runtime>(app: &AppHandle<R>, service: Option<String>, account_id: Option<String>) -> Result<(), String> {
+    #[cfg(windows)]
+    crate::automation::motion_runtime::cancel_for(service.as_deref(), account_id.as_deref());
     if let Some(s) = &service { service_url(s)?; }
     let target = match account_id {
         Some(id) => Some(profile_key(service.as_deref().ok_or("service required for profile close")?, &id)?),
@@ -1183,7 +1208,7 @@ pub fn close<R: Runtime>(app: &AppHandle<R>, account_id: Option<String>, service
             cancel_preloads(&state)?;
             if let Some(webview) = app.get_webview(&webview_label(&active_id)) {
                 webview.hide().map_err(|e| e.to_string())?;
-                crate::webview_download_bridge::diag("WorkspaceLifecycle", &format!("webview={} action=hidden", webview_label(&active_id)));
+                crate::diagnostics::diag("WorkspaceLifecycle", &format!("webview={} action=hidden", webview_label(&active_id)));
             }
         }
     }
@@ -1227,6 +1252,13 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
     let accounts = crate::account_store::load_accounts(app.clone())?.unwrap_or(serde_json::Value::Null);
     let storage_key = session_key_from_accounts(&accounts, &service, &account_id)?;
     let delete_directory = may_delete_session_directory(&accounts, &service, &account_id)?;
+    if let Some(window) = app.get_webview_window(&format!("{AUTOMATION_LABEL_PREFIX}-{key}")) {
+        window.destroy().map_err(|e| e.to_string())?;
+    }
+    #[cfg(windows)]
+    if crate::automation::browser::profile_in_use(&profile_path(app, &storage_key)?) {
+        return Err("This profile has an active automation job. Stop that job before deleting it.".into());
+    }
     let affected = vec![key.clone()];
     let state = app.state::<WebviewManager>();
     cancel_preloads(&state)?;
@@ -1242,9 +1274,6 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
                 popup.close().map_err(|e| e.to_string())?;
             }
         }
-        crate::webview_download_bridge::cancel_for_webview(
-            &app.state::<crate::webview_download_bridge::DownloadState>(), &label,
-        );
         if let Some(webview) = app.get_webview(&label) {
             webview.close().map_err(|e| e.to_string())?;
         }
@@ -1270,18 +1299,25 @@ pub fn remove<R: Runtime>(app: &AppHandle<R>, account_id: String, service: Strin
         }
     }
 
-    if !delete_directory { return Ok(true); }
     let profile = profile_path(app, &storage_key)?;
-    if !profile.exists() {
-        return Ok(true);
+    // Rename first: a failed metadata commit can restore the entire session.
+    // Never recursively delete the live directory before its index is committed.
+    let quarantine = profile.with_file_name(format!(".deleted-{}", uuid::Uuid::new_v4()));
+    let moved = delete_directory && profile.exists();
+    if moved { std::fs::rename(&profile, &quarantine).map_err(|e| format!("Session is still in use: {e}"))?; }
+    if let Err(error) = crate::account_store::remove_index(app, &accounts, &account_id, &service) {
+        if moved {
+            std::fs::rename(&quarantine, &profile).map_err(|restore| format!("{error}; session recovery needed at {}: {restore}", quarantine.display()))?;
+        }
+        return Err(error);
     }
-    match std::fs::remove_dir_all(&profile) {
-        Ok(()) => Ok(true),
-        Err(error) => {
-            eprintln!("[flowpilot-webview] profile cleanup pending account={account_id}: {error}");
-            Ok(false)
+    state.automation_ports.lock().map_err(|_| "webview state unavailable")?.remove(&key);
+    if moved {
+        if let Err(error) = std::fs::remove_dir_all(&quarantine) {
+            eprintln!("[flowpilot] Deleted profile cleanup deferred: {error}");
         }
     }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -1386,20 +1422,12 @@ pub(crate) fn automation_profile_directory(
 ) -> Result<(PathBuf, Option<String>), String> {
     let accounts = validate_automation_profile(app, service, account)?;
     let key = session_key_from_accounts(&accounts, service, account)?;
-    let args = if key.starts_with("flow-") {
-        let state = app.state::<WebviewManager>();
-        let mut ports = state.browser_profile_ports.lock().map_err(|_| "webview state unavailable")?;
-        let port = match ports.get(&key) {
-            Some(port) => *port,
-            None => {
-                let port = reserve_loopback_port()?;
-                ports.insert(key.clone(), port);
-                port
-            }
-        };
-        Some(flow_browser_args(port))
-    } else {
-        None
-    };
+    let args = browser_environment(&app.state::<WebviewManager>(), &key)?.map(|(_, args)| args);
     Ok((profile_path(app, &key)?, args))
+}
+
+/// Native clipboard recovery is limited to the foreground service child.
+pub(crate) fn is_active_view<R: Runtime>(app: &AppHandle<R>, label: &str) -> bool {
+    app.state::<WebviewManager>().active_account_id.lock().ok()
+        .and_then(|id| id.clone()).is_some_and(|key| webview_label(&key) == label)
 }

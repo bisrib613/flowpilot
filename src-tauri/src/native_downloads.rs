@@ -38,6 +38,7 @@ pub fn handle<R: Runtime>(webview: Webview<R>, event: DownloadEvent<'_>) -> bool
             match destination(&webview, target) {
                 Ok(path) => {
                     notify(&webview, format!("Downloading to {}", path.display()));
+                    if let Ok(mut active) = ACTIVE.lock() { *active.entry(webview.label().to_string()).or_default() += 1; }
                     *target = path;
                     true
                 }
@@ -49,6 +50,9 @@ pub fn handle<R: Runtime>(webview: Webview<R>, event: DownloadEvent<'_>) -> bool
             }
         }
         DownloadEvent::Finished { path, success, .. } => {
+            if let Ok(mut active) = ACTIVE.lock() {
+                if let Some(count) = active.get_mut(webview.label()) { *count = count.saturating_sub(1); }
+            }
             eprintln!("[flowpilot-download] finished success={success}");
             let location = path.map(|p| p.display().to_string()).unwrap_or_else(|| "the configured download folder".into());
             notify(&webview, if success { format!("Downloaded: {location}") } else { format!("Download failed or was cancelled: {location}") });
@@ -76,4 +80,10 @@ mod tests {
             assert!(result.contains("unique"));
         }
     }
+}
+
+static ACTIVE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+pub(crate) fn is_downloading(label: &str) -> bool {
+    ACTIVE.lock().map(|m| m.get(label).copied().unwrap_or(0) > 0).unwrap_or(true)
 }

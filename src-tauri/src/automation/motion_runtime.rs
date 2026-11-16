@@ -18,6 +18,22 @@ use super::{
     AutomationError,
 };
 
+static RUNNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static PROFILES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) fn cancel_for(service: Option<&str>, account: Option<&str>) {
+    if service.is_some_and(|s| s != "flow") { return; }
+    if PROFILES.lock().is_ok_and(|ids| !ids.is_empty() && account.map_or(true, |id| ids.iter().any(|i| i == id))) { cancel(); }
+}
+struct ProfileLease;
+impl Drop for ProfileLease {
+    fn drop(&mut self) { if let Ok(mut ids) = PROFILES.lock() { ids.clear(); } }
+}
+pub(crate) fn cancel() { CANCEL.store(true, std::sync::atomic::Ordering::Release); }
+pub(crate) fn check_cancelled() -> Result<(), AutomationError> {
+    if CANCEL.load(std::sync::atomic::Ordering::Acquire) { Err(AutomationError::Cancelled) } else { Ok(()) }
+}
+
 const FLOW: &[&str] = &["flow.google.com"];
 
 fn script(action: &str, value: Value) -> String {
@@ -50,6 +66,7 @@ impl FlowVideo for FlowSession<'_> {
         &mut self,
         request: FlowVideoRequest<'_>,
     ) -> Result<PathBuf, AutomationError> {
+        check_cancelled()?;
         let browser = Browser::open(
             self.app,
             "flow",
@@ -238,6 +255,7 @@ impl FlowVideo for FlowSession<'_> {
         let result = (|| {
             let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&target).map_err(failed)?;
             for offset in (0..size).step_by(262_144) {
+                check_cancelled()?;
                 let value = browser.eval(&script("downloadChunk", json!(offset)))?;
                 let encoded = value.as_str().ok_or_else(|| failed("Flow returned an invalid download chunk"))?;
                 let bytes = STANDARD.decode(encoded).map_err(failed)?;
@@ -253,6 +271,7 @@ impl FlowVideo for FlowSession<'_> {
             let _ = fs::remove_file(&target);
             return Err(error);
         }
+        receipt["downloadPath"] = json!(target);
         receipt["status"] = json!("downloaded");
         record(&receipt)?;
         Ok(target)
@@ -263,8 +282,9 @@ struct Ffmpeg<'a>(&'a Path, PathBuf, Uuid);
 
 impl Ffmpeg<'_> {
     fn run(&self, args: &[&str]) -> Result<(), AutomationError> {
+        check_cancelled()?;
         let result = Command::new(&self.1)
-            .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
+            .args(["-nostdin", "-y", "-hide_banner", "-loglevel", "error"])
             .args(args)
             .current_dir(self.0)
             .creation_flags(0x0800_0000)
@@ -305,7 +325,7 @@ impl MotionMedia for Ffmpeg<'_> {
     fn prepare(&mut self, video: &Path, _: &str) -> Result<Vec<PathBuf>, AutomationError> {
         self.run(&["-version"])?;
         let pattern = format!("motion-{}-%05d.mp4", self.2.simple());
-        self.run(&[
+        if !self.0.join("prepared").exists() { self.run(&[
             "-i",
             filename(video)?,
             "-map",
@@ -335,6 +355,8 @@ impl MotionMedia for Ffmpeg<'_> {
             "1",
             &pattern,
         ])?;
+        fs::write(self.0.join("prepared"), b"ready").map_err(failed)?;
+        }
         let mut clips = Vec::new();
         for entry in fs::read_dir(self.0).map_err(failed)? {
             let path = entry.map_err(failed)?.path();
@@ -348,6 +370,10 @@ impl MotionMedia for Ffmpeg<'_> {
         }
         clips.sort();
         Ok(clips)
+    }
+
+    fn checkpoint(&mut self, clips: &[PathBuf]) -> Result<(), AutomationError> {
+        crate::atomic_store::write(&self.0.join("completed.json"), &serde_json::to_vec(clips).map_err(failed)?).map_err(failed)
     }
 
     fn finish(
@@ -431,7 +457,7 @@ impl MotionMedia for Ffmpeg<'_> {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MotionInput {
     profile_id: String,
@@ -444,6 +470,24 @@ pub(crate) struct MotionInput {
 }
 
 pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> {
+    execute(app, input, Uuid::new_v4(), false)
+}
+
+fn job_folder(app: &AppHandle, id: Uuid) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    Ok(app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("motion-jobs").join(id.to_string()))
+}
+pub(crate) fn resume(app: AppHandle, id: String) -> Result<String, String> {
+    let id = Uuid::parse_str(&id).map_err(|_| "Invalid job ID")?;
+    let folder = job_folder(&app, id)?;
+    let input: MotionInput = serde_json::from_slice(&fs::read(folder.join("input.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    execute(app, input, id, true)
+}
+
+fn execute(app: AppHandle, input: MotionInput, job_id: Uuid, resume: bool) -> Result<String, String> {
+    let _guard = RUNNING.try_lock().map_err(|_| "A Motion Control job is already running")?;
+    CANCEL.store(false, std::sync::atomic::Ordering::Release);
+    let saved_input = serde_json::to_vec(&input).map_err(|e| e.to_string())?;
     let prompt = super::motion_prompt::compose(&input.prompt);
     if !matches!(input.aspect_ratio.as_str(), "9:16" | "16:9") {
         return Err("Select a supported aspect ratio".into());
@@ -453,6 +497,8 @@ pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> 
     profiles.insert(0, input.profile_id);
     let mut seen = std::collections::HashSet::new();
     profiles.retain(|profile| seen.insert(profile.clone()));
+    *PROFILES.lock().map_err(|_| "Motion job state unavailable")? = profiles.clone();
+    let _lease = ProfileLease;
     for profile in &profiles {
         crate::webview_manager::validate_automation_profile(&app, "flow", profile)?;
     }
@@ -460,7 +506,6 @@ pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> 
     let motion = local_file(&input.motion_video).map_err(|err| format!("{err:?}"))?;
     let output_dir = crate::download_settings::folder(&app)?.join("Motion Control");
     fs::create_dir_all(&output_dir).map_err(|err| format!("Cannot create Motion Control output folder: {err}"))?;
-    let job_id = Uuid::new_v4();
     let output = output_dir.join(format!("Motion-Control-{job_id}.mp4"));
     // Check write access before spending Flow credits.
     let probe = output_dir.join(format!(".{job_id}.write-check"));
@@ -470,8 +515,27 @@ pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> 
     let (binary, _) = crate::ffmpeg::resolve(&app).ok_or(
         "FFmpeg is required. Select Install FFmpeg in Motion Control or Settings → Dependencies.",
     )?;
-    let folder = std::env::temp_dir().join(format!("flowpilot-motion-{}", Uuid::new_v4()));
-    fs::create_dir(&folder).map_err(|err| err.to_string())?;
+    let folder = job_folder(&app, job_id)?;
+    fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
+    if !resume { crate::atomic_store::write(&folder.join("input.json"), &saved_input)?; }
+    let mut completed: Vec<PathBuf> = if resume && folder.join("completed.json").exists() {
+        serde_json::from_slice(&fs::read(folder.join("completed.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?
+    } else { vec![] };
+    if resume {
+        // Recover a downloaded clip if the app stopped between download and checkpoint.
+        loop {
+            let receipt = folder.join(format!("motion-{}-{:05}.json", job_id.simple(), completed.len()));
+            if !receipt.exists() { break; }
+            let value: Value = serde_json::from_slice(&fs::read(receipt).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            if value["status"] == "downloaded" {
+                let path = PathBuf::from(value["downloadPath"].as_str().ok_or("Saved download path missing")?);
+                if path.parent() != Some(folder.as_path()) || !path.is_file() { return Err("Saved clip is missing".into()); }
+                completed.push(path);
+            } else {
+                return Err(format!("Segment {} may already have consumed credits. Inspect {} before starting a new job; automatic resubmission is blocked. Resume job: {job_id}", completed.len()+1, value["project"].as_str().unwrap_or("Flow")));
+            }
+        }
+    }
     let image_extension = character
         .extension()
         .and_then(|value| value.to_str())
@@ -482,12 +546,8 @@ pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> 
             )
         })
         .ok_or("Choose a PNG, JPG, or WebP character image")?;
-    let image = folder.join(format!(
-        "character-{}.{}",
-        Uuid::new_v4().simple(),
-        image_extension
-    ));
-    fs::copy(&character, &image).map_err(|error| error.to_string())?;
+    let image = folder.join(format!("character-{}.{}", job_id.simple(), image_extension));
+    if !image.exists() { fs::copy(&character, &image).map_err(|error| error.to_string())?; }
     let result = motion_control::generate(
         &mut FlowSession {
             app: &app,
@@ -503,6 +563,7 @@ pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> 
             motion_video: &motion,
             output: &output,
             preserve_audio: input.preserve_audio,
+            completed_clips: &completed,
         },
     );
     match result {
@@ -512,11 +573,11 @@ pub(crate) fn run(app: AppHandle, input: MotionInput) -> Result<String, String> 
         }
         Err(motion_control::MotionControlError::Generate {
             segment, completed_clips, source: AutomationError::ProfilesExhausted
-        }) => Err(format!("Flow profiles ran out of credits before segment {segment}. {} completed clip(s) kept in {}", completed_clips.len(), folder.display())),
+        }) => Err(format!("Flow profiles ran out of credits before segment {segment}. {} completed clip(s) kept in {}. Resume job: {job_id}", completed_clips.len(), folder.display())),
         Err(motion_control::MotionControlError::Generate { segment, completed_clips, source: AutomationError::LoginRequired }) => Err(format!(
-            "Google Flow requests sign-in for segment {segment}. Open the selected Flow profile and confirm it reaches the Projects page, then retry. {} completed clip(s) kept in {}.",
+            "Google Flow requests sign-in for segment {segment}. Open the selected Flow profile and confirm it reaches the Projects page, then retry. {} completed clip(s) kept in {}. Resume job: {job_id}",
             completed_clips.len(), folder.display()
         )),
-        Err(error) => Err(format!("{error:?}. Working folder: {}", folder.display())),
+        Err(error) => Err(format!("{error:?}. Working folder: {}. Resume job: {job_id}", folder.display())),
     }
 }

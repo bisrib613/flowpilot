@@ -12,6 +12,7 @@ pub(crate) mod publishing;
 pub(crate) enum AutomationError {
     InvalidInput(&'static str),
     LoginRequired,
+    Cancelled,
     InsufficientCredits { remaining: u64, required: u64 },
     ProfilesExhausted,
     DependencyMissing(&'static str),

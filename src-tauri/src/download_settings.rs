@@ -51,7 +51,7 @@ pub async fn choose_download_folder(app: AppHandle) -> Result<Option<String>, St
     let _guard = SETTINGS_LOCK.lock().map_err(|_| "Download settings unavailable")?;
     let config = config_path(&app)?;
     if let Some(parent) = config.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
-    fs::write(config, serde_json::to_vec(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    crate::atomic_store::write(&config, &serde_json::to_vec(&path).map_err(|e| e.to_string())?)?;
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 

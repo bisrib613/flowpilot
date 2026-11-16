@@ -201,6 +201,7 @@ impl Browser {
     pub(super) fn wait(&self, expression: &str, seconds: u64) -> Result<Value, AutomationError> {
         let deadline = Instant::now() + Duration::from_secs(seconds);
         loop {
+            if self.hosts.contains(&"flow.google.com") { super::motion_runtime::check_cancelled()?; }
             let value = self.eval(expression)?;
             if !matches!(value, Value::Null | Value::Bool(false)) {
                 return Ok(value);
@@ -395,4 +396,8 @@ impl Drop for Browser {
             }
         });
     }
+}
+
+pub(crate) fn profile_in_use(path: &Path) -> bool {
+    ACTIVE_PROFILES.lock().map(|profiles| profiles.contains(path)).unwrap_or(true)
 }

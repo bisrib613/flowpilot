@@ -1,3 +1,4 @@
+import { useMotionJob, generateMotion, resumeMotion, cancelMotion } from "../services/motion-job"
 import defaultPrompt from "../../src-tauri/src/automation/motion-default.txt?raw"
 import FFmpegStatus from "./FFmpegStatus"
 import { convertFileSrc, invoke } from "@tauri-apps/api/core"
@@ -17,15 +18,15 @@ export default function MotionControl({ profiles }: { profiles: Profile[] }) {
   const [motionVideo, setMotionVideo] = useState("")
   const [ffmpegReady, setFfmpegReady] = useState(false)
   const [videoError, setVideoError] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [status, setStatus] = useState("")
+  const { busy, status, resumeJob } = useMotionJob()
+  const [fileError, setFileError] = useState("")
 
   async function choose(kind: string, setPath: (path: string) => void) {
     try {
       const selected = await invoke<string | null>("choose_motion_file", { kind })
       if (selected !== null) setPath(selected)
     } catch (error) {
-      setStatus(String(error))
+      setFileError(String(error))
     }
   }
 
@@ -38,22 +39,11 @@ export default function MotionControl({ profiles }: { profiles: Profile[] }) {
       const start = profiles.findIndex(profile => profile.id === profileId)
       if (start < 0) return
       const profileOrder = [...profiles.slice(start), ...profiles.slice(0, start)].map(profile => profile.id)
-      setBusy(true)
-      setStatus("Preparing references and generating video…")
-      try {
-        const result = await invoke<string>("generate_motion", { input: {
-          profileId, profileOrder,
-          prompt: fields.get("prompt"),
-          aspectRatio: fields.get("ratio"),
-          preserveAudio: fields.has("audio"),
-          characterImage, motionVideo,
-        } })
-        setStatus(`Saved to ${result}`)
-      } catch (error) {
-        setStatus(String(error))
-      } finally {
-        setBusy(false)
-      }
+      setFileError("")
+      await generateMotion({ profileId, profileOrder,
+        prompt: fields.get("prompt"), aspectRatio: fields.get("ratio"),
+        preserveAudio: fields.has("audio"), characterImage, motionVideo,
+      })
     }}>
       <fieldset disabled={busy || profiles.length === 0}>
         <div className="motion-grid">
@@ -95,6 +85,9 @@ export default function MotionControl({ profiles }: { profiles: Profile[] }) {
         </div>
       </fieldset>
       {profiles.length === 0 && <p role="status">Add a Google Flow profile to start.</p>}
+      {busy && <button type="button" className="secondary" onClick={() => void cancelMotion()}>Stop generation</button>}
+      {!busy && resumeJob && <button type="button" className="secondary" onClick={() => void resumeMotion(resumeJob)}>Resume saved job</button>}
+      {fileError && <p role="alert">{fileError}</p>}
       {status && <p className="motion-status" role="status">{status}</p>}
     </form>
   </section>
