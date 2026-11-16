@@ -19,6 +19,7 @@ export default function MotionControl({ profiles }: { profiles: Profile[] }) {
   const [ffmpegReady, setFfmpegReady] = useState(false)
   const [videoError, setVideoError] = useState(false)
   const { busy, status, resumeJob } = useMotionJob()
+  const [savedJobId, setSavedJobId] = useState("")
   const [fileError, setFileError] = useState("")
 
   async function choose(kind: string, setPath: (path: string) => void) {
@@ -87,6 +88,13 @@ export default function MotionControl({ profiles }: { profiles: Profile[] }) {
       {profiles.length === 0 && <p role="status">Add a Google Flow profile to start.</p>}
       {busy && <button type="button" className="secondary" onClick={() => void cancelMotion()}>Stop generation</button>}
       {!busy && resumeJob && <button type="button" className="secondary" onClick={() => void resumeMotion(resumeJob)}>Resume saved job</button>}
+      {!busy && <details>
+        <summary>Resume a job after restarting</summary>
+        <label className="motion-field">Saved job ID
+          <input value={savedJobId} onChange={event => setSavedJobId(event.target.value.trim())} placeholder="Paste the Resume job ID from the error" />
+        </label>
+        <button type="button" className="secondary" disabled={!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(savedJobId)} onClick={() => void resumeMotion(savedJobId)}>Resume this job</button>
+      </details>}
       {fileError && <p role="alert">{fileError}</p>}
       {status && <p className="motion-status" role="status">{status}</p>}
     </form>
