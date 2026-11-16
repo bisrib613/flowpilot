@@ -144,6 +144,7 @@ impl FlowVideo for FlowSession<'_> {
             let filename = path.file_name().and_then(|value| value.to_str())
                 .ok_or(AutomationError::InvalidInput("Reference filename is invalid"))?;
             let aliases = [filename, name];
+            step(&browser, "beforeUpload", Value::Null)?;
             browser.upload_from_chooser(path, || {
                 let add = wait_stage(&browser, "addTarget", Value::Null, 20)?;
                 browser.click_at(&add)?;
@@ -155,16 +156,25 @@ impl FlowVideo for FlowSession<'_> {
                 other => other,
             })?;
             let reference = json!({"names": aliases, "kind": kind});
+            let await_asset = |action: &str| {
+                wait_stage(&browser, action, reference.clone(), 60).map_err(|error| match error {
+                    AutomationError::Failed(message) => {
+                        let state = browser.eval(&script("assetState", reference.clone())).unwrap_or(Value::Null);
+                        failed(format!("{message} ({filename}); asset state: {state}"))
+                    }
+                    other => other,
+                })
+            };
             if kind == "video" {
-                let observed = wait_stage(&browser, "assetHover", reference.clone(), 60)?;
+                let observed = await_asset("assetHover")?;
+                if observed.as_str() == Some("consent-required") {
+                    return Err(failed("Open the selected Flow profile and approve Google's upload consent before resuming Motion Control"));
+                }
                 if observed.is_object() {
                     browser.hover_at(&observed)?;
                 }
             }
-            let asset = wait_stage(&browser, "asset", reference, 60).map_err(|error| match error {
-                AutomationError::Failed(message) => failed(format!("{message} ({name})")),
-                other => other,
-            })?;
+            let asset = await_asset("asset")?;
             if asset.as_str() == Some("consent-required") {
                 return Err(failed("Open the selected Flow profile and approve Google's upload consent before retrying Motion Control"));
             }

@@ -16,6 +16,30 @@
         el.getAttribute('aria-label'), ...(el.innerText || '').split('\n')].filter(Boolean)
         .map(value => value.trim().replace(/^@/, ''));
     const hasName = (el, names) => labels(el).some(label => names.includes(label));
+    // Filenames can live on a child tooltip/image rather than the tile host.
+    // Keep exact identity matching; never select the newest/first tile as a fallback.
+    const assetTiles = names => all(document, 'flow-grid-tile-container').filter(tile =>
+        hasName(tile, names) || [...tile.querySelectorAll('[data-name], [data-filename], [title], [aria-label], img[alt]')]
+            .some(child => hasName(child, names) || names.includes(child.getAttribute('alt'))));
+    const assetReady = (tile, kind) => {
+        const video = tile.querySelector('video');
+        const image = tile.querySelector('img[src]');
+        return kind === 'video'
+            ? !!(video?.readyState >= 1 && Number.isFinite(video.duration) && video.duration > 0)
+            : !!(image?.complete && image.naturalWidth);
+    };
+    const assetPoint = tile => {
+        tile.scrollIntoView({block: 'center', inline: 'nearest'});
+        const r = tile.getBoundingClientRect();
+        const left = Math.max(0, r.left), right = Math.min(innerWidth, r.right);
+        const top = Math.max(0, r.top), bottom = Math.min(innerHeight, r.bottom);
+        if (right <= left || bottom <= top) return null;
+        for (const fraction of [0.5, 0.25, 0.75]) {
+            const x = left + (right - left) * fraction, y = top + (bottom - top) * fraction;
+            if (tile.contains(document.elementFromPoint(x, y))) return {x, y};
+        }
+        return null;
+    };
     const hasMention = (names, count) => !!editor && [...editor.querySelectorAll('[contenteditable="false"]')]
         .filter(chip => hasName(chip, names)).length >= count;
     const mentionInput = () => all(document, '#add-menu-input, .cdk-overlay-pane input[aria-label="Telusuri aset"], .cdk-overlay-pane input[aria-label="Search assets"], .cdk-overlay-pane input[placeholder="Telusuri aset"], .cdk-overlay-pane input[placeholder="Search assets"]')[0];
@@ -144,23 +168,33 @@
                 .filter(button => /^(Start generation|Mulai pembuatan)$/i.test(button.getAttribute('aria-label')));
             return buttons.length === 1 ? controlPoint(buttons[0]) : null;
         }
+        case 'beforeUpload':
+            window.__flowpilotTilesBeforeUpload = new WeakSet(document.querySelectorAll('flow-grid-tile-container'));
+            return true;
+        case 'assetState': {
+            const tiles = assetTiles(data.names);
+            return {visibleTiles: all(document, 'flow-grid-tile-container').length,
+                matchingTiles: tiles.length, consent: visible(document.querySelector('flow-upload-consent-dialog')),
+                mediaReady: tiles.length === 1 && assetReady(tiles[0], data.kind),
+                hoverReachable: tiles.length === 1 && !!assetPoint(tiles[0])};
+        }
         case 'assetHover':
         case 'asset': {
             if (visible(document.querySelector('flow-upload-consent-dialog'))) return 'consent-required';
-            const tiles = all(document, 'flow-grid-tile-container').filter(tile =>
-                hasName(tile, data.names));
-            if (tiles.length !== 1) return null;
+            const tiles = assetTiles(data.names);
+            if (tiles.length !== 1) {
+                // Some tiles reveal their filename only after pointer hover. Hovering a
+                // single new card is harmless; asset acceptance still requires its name.
+                if (action !== 'assetHover' || tiles.length || !window.__flowpilotTilesBeforeUpload) return null;
+                const added = all(document, 'flow-grid-tile-container')
+                    .filter(tile => !window.__flowpilotTilesBeforeUpload.has(tile));
+                return added.length === 1 ? assetPoint(added[0]) : null;
+            }
             const tile = tiles[0];
             tile.setAttribute('data-flowpilot-reference', '');
-            if (action === 'assetHover') {
-                return controlPoint(tile);
-            }
-            const video = tile.querySelector('video');
-            const image = tile.querySelector('img[src]');
-            const ready = data.kind === 'video'
-                ? video?.readyState >= 1 && Number.isFinite(video.duration) && video.duration > 0
-                : !!(image?.complete && image.naturalWidth);
-            return ready ? (labels(tile).find(label => data.names.includes(label)) || data.names[0]) : null;
+            // A decoded video needs no hover, including when a transient overlay covers it.
+            if (assetReady(tile, data.kind)) return data.names[0];
+            return action === 'assetHover' ? assetPoint(tile) : null;
         }
         case 'focus': if (!editor) return false; editor.focus(); return true;
         case 'mentionSearch': {
